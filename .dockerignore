@@ -1,34 +1,82 @@
-# The .dockerignore file excludes files from the container build process.
-#
-# https://docs.docker.com/engine/reference/builder/#dockerignore-file
+# Git
+.git/
+.gitignore
 
-# Exclude Git files
-**/.git
-**/.github
-**/.gitignore
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
 
-# Exclude Python cache files
-__pycache__
-.mypy_cache
-.pytest_cache
-.ruff_cache
+# Virtual environments
+venv/
+env/
+ENV/
 
-# Exclude Python virtual environment
-/venv
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
 
-# Replicate
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Model weights and cache directories (downloaded during build or runtime)
+/weights/
+/weights/*
+/weights_backup/
+/weights_backup/*
+/model_cache/
 /model_cache/*
+checkpoints/
+models/
+
+# Test outputs
+outputs/
+results/
+/output/
+
+# Media files that might be generated during testing
 *.png
 *.jpg
 *.jpeg
 *.gif
 *.webp
-*.heic
-*.heif
-*.hevc
-*.h264
 *.mp4
 *.mov
 *.avi
 *.mkv
 *.flv
+*.webm
+*.wav
+*.mp3
+*.flac

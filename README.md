@@ -1,147 +1,188 @@
-# Cog Template Repository
+# HuMo: Human-Centric Video Generation
 
-This is a template repository for creating [Cog](https://github.com/replicate/cog) models that efficiently handle model weights with proper caching. It includes tools to upload model weights to Google Cloud Storage and generate download code for your `predict.py` file.
+[![arXiv](https://img.shields.io/badge/arXiv%20paper-2509.08519-b31b1b.svg)](https://arxiv.org/abs/2509.08519)&nbsp;
+[![Replicate](https://replicate.com/bytedance-research/humo/badge)](https://replicate.com/bytedance-research/humo)&nbsp;
+[![Hugging Face](https://img.shields.io/static/v1?label=🤗%20Hugging%20Face&message=Model&color=orange)](https://huggingface.co/bytedance-research/HuMo)
 
-[![Replicate](https://replicate.com/zsxkib/model-name/badge)](https://replicate.com/zsxkib/model-name)
+> **HuMo: Human-Centric Video Generation via Collaborative Multi-Modal Conditioning**  
+> A unified framework for generating high-quality, controllable human videos from text, images, and audio.
 
-## Getting Started
+<p align="center">
+<img src="assets/teaser.png" width="95%">
+</p>
 
-To use this template for your own model:
+## ✨ Key Features
 
-1. Clone this repository
-2. Modify `predict.py` with your model's implementation
-3. Update `cog.yaml` with your model's dependencies
-4. Use `cache_manager.py` to upload and manage model weights
+HuMo supports three powerful generation modes:
 
-## Repository Structure
+- **Text + Image → Video**: Generate videos with custom character appearance, clothing, and scenes
+- **Text + Audio → Video**: Create audio-synchronized videos from text descriptions and audio
+- **Text + Image + Audio → Video**: Ultimate control combining all three modalities
 
-- `predict.py`: The main model implementation file 
-- `cache_manager.py`: Script for uploading model weights to GCS and generating download code
-- `cog.yaml`: Cog configuration file that defines your model's environment
+## 🚀 Quick Start with Cog
 
-## Managing Model Weights with cache_manager.py
+This repository contains a [Cog](https://cog.run) implementation of HuMo, making it easy to run locally or deploy on [Replicate](https://replicate.com).
 
-A key feature of this template is the `cache_manager.py` script, which helps you:
+### Prerequisites
 
-1. Upload model weights to Google Cloud Storage (GCS)
-2. Generate code for downloading those weights in your `predict.py`
-3. Handle both individual files and directories efficiently
+- **GPU**: NVIDIA H100 (recommended) or A100 with 40GB+ VRAM
+- **Docker**: [Install Docker](https://docs.docker.com/get-docker/)
+- **Cog**: [Install Cog](https://cog.run/docs/getting-started-own-model)
 
-### Prerequisites for Using cache_manager.py
-
-- Google Cloud SDK installed and configured (`gcloud` command)
-- Permission to upload to the specified GCS bucket (default: `gs://replicate-weights/`)
-- `tar` command available in your PATH
-
-### Basic Usage
+### Installation & Usage
 
 ```bash
-python cache_manager.py --model-name your-model-name --local-dirs model_cache
+# Clone the repository
+git clone https://github.com/replicate/cog-ByteDance-Phantom-HuMo
+cd cog-ByteDance-Phantom-HuMo
+
+# Run a prediction (this will automatically build the container)
+cog predict -i prompt="A person dancing to energetic music" \
+             -i audio=@examples/audio_sample.wav \
+             -i mode="text_audio"
 ```
 
-This will:
-1. Find files and directories in the `model_cache` directory
-2. Create tar archives of each directory
-3. Upload both individual files and tar archives to GCS
-4. Generate code snippets for downloading the weights in your `predict.py`
+That's it! The model will automatically:
+1. Download the required weights (~104GB) from our CDN
+2. Build the Docker container 
+3. Generate your video
 
-### Advanced Usage
+### Input Parameters
+
+| Parameter | Type | Description | Default |
+|-----------|------|-------------|---------|
+| `prompt` | string | Text description of the desired video | *Required* |
+| `image` | file | Reference image for character/scene (optional) | None |
+| `audio` | file | Audio file for synchronization (optional) | None |
+| `mode` | string | Generation mode: `text_only`, `text_image`, `text_audio`, `text_image_audio` | `text_only` |
+| `frames` | integer | Number of frames to generate (1-97) | 97 |
+| `height` | integer | Video height in pixels (480 or 720) | 720 |
+| `width` | integer | Video width in pixels (832 or 1280) | 1280 |
+| `steps` | integer | Number of denoising steps (30-50) | 50 |
+| `scale_t` | float | Text guidance strength (0.0-2.0) | 1.0 |
+| `scale_a` | float | Audio guidance strength (0.0-2.0) | 1.0 |
+| `seed` | integer | Random seed for reproducible results | None |
+
+### Example Usage
+
+**Text + Audio Generation:**
+```bash
+cog predict -i prompt="A professional dancer performing contemporary dance" \
+             -i audio=@examples/dance_music.wav \
+             -i mode="text_audio" \
+             -i frames=97
+```
+
+**Text + Image + Audio Generation:**
+```bash
+cog predict -i prompt="A person singing passionately on stage" \
+             -i image=@examples/reference_person.jpg \
+             -i audio=@examples/singing_audio.wav \
+             -i mode="text_image_audio"
+```
+
+## 📁 Repository Structure
+
+```
+├── predict.py          # Main Cog prediction interface
+├── cog.yaml           # Cog configuration
+├── requirements.txt   # Python dependencies
+├── humo/             # Core HuMo model code
+├── examples/         # Example inputs and test cases
+└── assets/          # Documentation assets
+```
+
+## 🔧 Development
+
+### Local Development Setup
 
 ```bash
-python cache_manager.py \
-    --model-name your-model-name \
-    --local-dirs model_cache weights \
-    --gcs-base-path gs://replicate-weights/ \
-    --cdn-base-url https://weights.replicate.delivery/default/ \
-    --keep-tars
+# Clone and enter directory
+git clone https://github.com/replicate/cog-ByteDance-Phantom-HuMo
+cd cog-ByteDance-Phantom-HuMo
+
+# Build the container
+cog build
+
+# Run predictions
+cog predict -i prompt="Your text here" -i mode="text_only"
 ```
 
-#### Parameters
+### Custom Configuration
 
-- `--model-name`: Required. The name of your model (used in paths)
-- `--local-dirs`: Required. One or more local directories to process
-- `--gcs-base-path`: Optional. Base Google Cloud Storage path
-- `--cdn-base-url`: Optional. Base CDN URL
-- `--keep-tars`: Optional. Keep the generated .tar files locally after upload
+The model behavior can be fine-tuned by modifying the generation parameters:
 
-## Workflow Example
+- **Higher `steps`** (40-50): Better quality, slower generation
+- **Higher `scale_t`**: Stronger text adherence
+- **Higher `scale_a`**: Better audio synchronization
+- **720p resolution**: Best quality (requires more VRAM)
+- **480p resolution**: Faster generation
 
-1. **Develop your model locally**:
-   ```bash
-   # Run your model once to download weights to model_cache
-   cog predict -i prompt="test"
-   ```
+## 🎯 Use Cases
 
-2. **Upload model weights**:
-   ```bash
-   python cache_manager.py --model-name your-model-name --local-dirs model_cache
-   ```
+**Content Creation:**
+- Music videos and dance content
+- Character-based storytelling
+- Audio-visual presentations
 
-3. **Copy the generated code snippet** into your `predict.py`
+**Entertainment:**
+- Interactive avatar generation
+- Video game character animation
+- Film and media production
 
-4. **Test that the model can download weights**:
-   ```bash
-   rm -rf model_cache
-   cog predict -i prompt="test"
-   ```
+**Research & Education:**
+- Human motion studies
+- Audio-visual synchronization research
+- Multimodal AI demonstrations
 
-## Example Implementation
+## ⚡ Performance
 
-The template comes with a sample Stable Diffusion implementation in `predict.py` that demonstrates:
+- **Generation Time**: ~2-5 minutes for 97 frames (4 seconds) on H100
+- **Memory Requirements**: 40GB+ VRAM recommended
+- **Resolution Support**: 480p, 720p
+- **Frame Rate**: 25 FPS output
 
-- Setting up the model cache directory
-- Downloading weights from GCS with progress reporting
-- Setting environment variables for model caching
-- Random seed generation for reproducibility
-- Output format and quality options
+## 📝 Technical Details
 
-## Best Practices
+HuMo is built on a 17B parameter transformer architecture with:
+- **Multi-modal conditioning** for text, image, and audio inputs
+- **Temporal consistency** across 97-frame sequences
+- **High-fidelity synthesis** at up to 720p resolution
+- **Efficient caching system** for fast model loading
 
-- **Environment Variables**: Set cache-related environment variables early
-  ```python
-  os.environ["HF_HOME"] = MODEL_CACHE
-  os.environ["TORCH_HOME"] = MODEL_CACHE
-  # etc.
-  ```
+## 🤝 Contributing
 
-- **Seed Management**: Provide a seed parameter and implement random seed generation
-  ```python
-  if seed is None:
-      seed = int.from_bytes(os.urandom(2), "big")
-  print(f"Using seed: {seed}")
-  ```
+We welcome contributions! Please:
+1. Fork the repository
+2. Create a feature branch
+3. Submit a pull request
 
-- **Output Formats**: Support multiple output formats (webp, jpg, png) with quality controls
-  ```python
-  output_format: str = Input(
-      description="Format of the output image",
-      choices=["webp", "jpg", "png"],
-      default="webp"
-  )
-  output_quality: int = Input(
-      description="The image compression quality...",
-      ge=1, le=100, default=80
-  )
-  ```
+## 📜 License
 
-## Deploying to Replicate
+This project is licensed under the Apache License 2.0. See [LICENSE](LICENSE) for details.
 
-After setting up your model, you can push it to [Replicate](https://replicate.com):
+## 📚 Citation
 
-1. Create a new model on Replicate
-2. Push your model:
-   ```bash
-   cog push r8.im/username/model-name
-   ```
+If you use HuMo in your research, please cite:
 
-## License
+```bibtex
+@misc{chen2025humo,
+      title={HuMo: Human-Centric Video Generation via Collaborative Multi-Modal Conditioning}, 
+      author={Liyang Chen and Tianxiang Ma and Jiawei Liu and Bingchuan Li and Zhuowei Chen and Lijie Liu and Xu He and Gen Li and Qian He and Zhiyong Wu},
+      year={2025},
+      eprint={2509.08519},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV}
+}
+```
 
-MIT
+## 🔗 Links
+
+- **Paper**: [arXiv:2509.08519](https://arxiv.org/abs/2509.08519)
+- **Project Page**: [phantom-video.github.io/HuMo](https://phantom-video.github.io/HuMo/)
+- **Original Repository**: [ByteDance Research](https://huggingface.co/bytedance-research/HuMo)
+- **Replicate Demo**: [replicate.com/bytedance-research/humo](https://replicate.com/bytedance-research/humo)
 
 ---
 
----
-
-⭐ Star this on [GitHub](https://github.com/zsxkib/model-name)!
-
-👋 Follow `zsxkib` on [Twitter/X](https://twitter.com/zsakib_)
+For questions or support, please open an issue or visit our [project page](https://phantom-video.github.io/HuMo/).

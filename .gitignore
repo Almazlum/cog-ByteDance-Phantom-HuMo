@@ -170,9 +170,18 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
-# Replicate
-.cog
+# Replicate & Cog
+.cog/
+/model_cache/
 /model_cache/*
+/weights/
+/weights/*
+/weights_backup/
+/weights_backup/*
+checkpoints/
+models/
+
+# Media files
 *.png
 *.jpg
 *.jpeg
@@ -187,3 +196,12 @@ cython_debug/
 *.avi
 *.mkv
 *.flv
+*.webm
+*.wav
+*.mp3
+*.flac
+
+# Test outputs
+outputs/
+results/
+/output/
