@@ -3,38 +3,9 @@ build:
   cuda: "12.4"
   system_packages:
     - "ffmpeg"
-    - "git"
+    - "git" 
     - "wget"
   python_version: "3.11"
-  python_packages:
-    - "torch==2.5.1"
-    - "torchvision==0.20.1" 
-    - "torchaudio==2.5.1"
-    - "--extra-index-url https://download.pytorch.org/whl/cu124"
-  run:
-    - pip install -r requirements.txt
+  python_requirements: "requirements.txt"
 
 predict: "predict.py:Predictor"
-
-image: "r8.im/replicate/cog-humo"
-
-description: "HuMo: Human-centric video generation from text, image, and audio inputs using a 17B parameter transformer model"
-
-github_url: "https://github.com/replicate/cog-ByteDance-Phantom-HuMo"
-
-paper_url: "https://arxiv.org/abs/2509.08519"
-
-license_url: "https://github.com/replicate/cog-ByteDance-Phantom-HuMo/blob/main/LICENSE"
-
-cover_image_url: "https://replicate.delivery/pbxt/assets/humo-cover.jpg"
-
-tags:
-  - "video-generation"
-  - "human-centric"
-  - "multimodal"
-  - "text-to-video"
-  - "audio-to-video"
-  - "image-to-video"
-  - "bytedance"
-  - "transformer"
-  - "ai-video"

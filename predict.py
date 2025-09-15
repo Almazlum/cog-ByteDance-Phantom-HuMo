@@ -88,8 +88,19 @@ class Predictor(BasePredictor):
         # Add humo module to Python path
         sys.path.insert(0, str(Path.cwd()))
         
-        print("[✓] HuMo setup complete - using generate.py for inference")
-        self.model_loaded = True
+        print("[!] Importing HuMo modules...")
+        from omegaconf import OmegaConf
+        from humo.generate import Generator
+        
+        # Load configuration
+        config_path = "humo/configs/inference/generate.yaml"
+        self.config = OmegaConf.load(config_path)
+        
+        # Initialize HuMo Generator
+        print("[!] Initializing HuMo generator...")
+        self.generator = Generator(self.config)
+        
+        print("[✓] HuMo setup complete!")
 
     def predict(
         self,
@@ -154,6 +165,10 @@ class Predictor(BasePredictor):
         if seed == -1:
             seed = int(time.time())
         
+        # Set random seeds
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+        
         print(f"[!] Generating video with mode: {mode}")
         print(f"[~] Resolution: {width}x{height}, Frames: {frames}, Steps: {steps}")
         print(f"[~] Text guidance: {scale_t}, Audio guidance: {scale_a}")
@@ -167,11 +182,26 @@ class Predictor(BasePredictor):
             if mode in ["text_audio", "text_image_audio"] and audio is None:
                 raise ValueError(f"Mode '{mode}' requires an input audio file")
             
-            # Create temporary directory for processing
-            temp_dir = Path(tempfile.mkdtemp())
-            output_path = temp_dir / "output.mp4"
+            # Update config with user parameters
+            self.config.generation.frames = frames
+            self.config.generation.height = height  
+            self.config.generation.width = width
+            self.config.generation.scale_t = scale_t
+            self.config.generation.scale_a = scale_a
+            self.config.diffusion.timesteps.sampling.steps = steps
             
-            # Create test case configuration
+            # Set mode based on inputs
+            if mode == "text_only":
+                self.config.generation.mode = "T"
+            elif mode == "text_image":
+                self.config.generation.mode = "TI"
+            elif mode == "text_audio":
+                self.config.generation.mode = "TA"  
+            elif mode == "text_image_audio":
+                self.config.generation.mode = "TIA"
+            
+            # Create temporary test case
+            temp_dir = Path(tempfile.mkdtemp())
             test_case = {
                 "case_1": {
                     "prompt": prompt,
@@ -184,66 +214,36 @@ class Predictor(BasePredictor):
             with open(test_case_path, "w") as f:
                 json.dump(test_case, f, indent=2)
             
-            # Set generation parameters via environment or config modification
-            os.environ.update({
-                "HUMO_FRAMES": str(frames),
-                "HUMO_HEIGHT": str(height),
-                "HUMO_WIDTH": str(width),
-                "HUMO_STEPS": str(steps),
-                "HUMO_SCALE_T": str(scale_t),
-                "HUMO_SCALE_A": str(scale_a),
-                "HUMO_SEED": str(seed)
-            })
+            # Update config paths
+            self.config.generation.test_case_path = str(test_case_path)
+            self.config.generation.case_name = "case_1"
+            self.config.generation.output_dir = str(temp_dir)
             
-            print("[!] Starting video generation using HuMo generate.py...")
+            print("[!] Starting video generation...")
             generation_start = time.time()
             
-            # Determine which generate script to use based on mode
-            if mode == "text_audio" or (mode == "text_image_audio" and audio):
-                generate_script = "humo/generate.py"
-            else:
-                generate_script = "humo/generate.py"  # Default to main script
-            
-            # Run HuMo generation
-            cmd = [
-                "python", generate_script,
-                "--config_path", "humo/configs/inference/generate.yaml",
-                "--test_case_path", str(test_case_path),
-                "--output_dir", str(temp_dir),
-                "--case_name", "case_1"
-            ]
-            
-            print(f"[~] Running: {' '.join(cmd)}")
-            result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(Path.cwd()))
-            
-            if result.returncode != 0:
-                print(f"[ERROR] Generation failed:")
-                print(f"STDOUT: {result.stdout}")
-                print(f"STDERR: {result.stderr}")
-                raise RuntimeError(f"HuMo generation failed with return code {result.returncode}")
+            # Use HuMo Generator entrypoint
+            output_path = self.generator.entrypoint()
             
             generation_time = time.time() - generation_start
             print(f"[✓] Video generation completed in {generation_time:.1f}s")
             
-            # Find the generated video file
-            generated_files = list(temp_dir.glob("*.mp4"))
-            if not generated_files:
-                raise RuntimeError("No video file was generated")
+            # Verify output file exists
+            if not Path(output_path).exists():
+                raise RuntimeError(f"Generated video not found at {output_path}")
             
-            generated_video = generated_files[0]
-            final_output = temp_dir / "humo_output.mp4"
-            generated_video.rename(final_output)
-            
-            print(f"[✓] Video saved to {final_output}")
+            print(f"[✓] Video saved to {output_path}")
             
             # Clean up GPU memory
             torch.cuda.empty_cache()
             gc.collect()
             
-            return CogPath(final_output)
+            return CogPath(output_path)
             
         except Exception as e:
             print(f"[ERROR] Video generation failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
             torch.cuda.empty_cache()
             gc.collect()
             raise
