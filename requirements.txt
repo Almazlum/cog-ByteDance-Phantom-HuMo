@@ -40,3 +40,9 @@ mediapy>=1.2.0
 # Development and debugging
 typing-extensions>=4.7.0
 packaging>=23.0
+
+# Tokenizer dependencies used by HuMo tokenizers
+ftfy>=6.1.1
+regex>=2023.10.3
+sentencepiece>=0.1.99
+tokenizers>=0.15.0
