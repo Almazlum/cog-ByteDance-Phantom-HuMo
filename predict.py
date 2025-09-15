@@ -8,23 +8,22 @@ import sys
 import gc
 import subprocess
 import time
-import logging
-from pathlib import Path
-from typing import Iterator, Any, Optional, Union
-import tempfile
 import json
+import tempfile
+from pathlib import Path
+from typing import Optional
 
 # GPU optimizations
 os.environ.update({
-    "CUDA_LAUNCH_BLOCKING": "0",           
-    "TORCH_BACKENDS_CUDNN_BENCHMARK": "1", 
-    "PYTORCH_CUDA_ALLOC_CONF": "max_split_size_mb:128",  
-    "OMP_NUM_THREADS": "8",                
-    "MKL_NUM_THREADS": "8",               
-    "TOKENIZERS_PARALLELISM": "false"      
+    "CUDA_LAUNCH_BLOCKING": "0",
+    "TORCH_BACKENDS_CUDNN_BENCHMARK": "1",
+    "PYTORCH_CUDA_ALLOC_CONF": "max_split_size_mb:128",
+    "OMP_NUM_THREADS": "8",
+    "MKL_NUM_THREADS": "8",
+    "TOKENIZERS_PARALLELISM": "false"
 })
 
-# Cache Manager Integration
+# Model cache configuration
 MODEL_CACHE = "weights"
 BASE_URL = "https://weights.replicate.delivery/default/HuMo/weights/"
 
@@ -40,8 +39,8 @@ os.environ.update({
 def download_weights(url: str, dest: str) -> None:
     """Download model weights using pget with parallel downloads"""
     start = time.time()
-    print(f"[!] Initiating download from URL: {url}")
-    print(f"[~] Destination path: {dest}")
+    print(f"[!] Downloading from: {url}")
+    print(f"[~] Destination: {dest}")
     
     if ".tar" in dest:
         dest = os.path.dirname(dest)
@@ -49,18 +48,18 @@ def download_weights(url: str, dest: str) -> None:
     command = ["pget", "-vf" + ("x" if ".tar" in url else ""), url, dest]
     
     try:
-        print(f"[~] Running command: {' '.join(command)}")
+        print(f"[~] Running: {' '.join(command)}")
         subprocess.check_call(command, close_fds=False)
         print(f"[✓] Download completed in {time.time() - start:.1f}s")
     except subprocess.CalledProcessError as e:
-        print(f"[ERROR] Failed to download weights. Command '{' '.join(e.cmd)}' returned non-zero exit status {e.returncode}.")
+        print(f"[ERROR] Download failed: {e}")
         raise
 
 def ensure_model_weights():
     """Download and extract all required model weights"""
     models_to_download = [
         ("HuMo.tar", "HuMo"),
-        ("Wan2.1-T2V-1.3B.tar", "Wan2.1-T2V-1.3B"), 
+        ("Wan2.1-T2V-1.3B.tar", "Wan2.1-T2V-1.3B"),
         ("whisper-large-v3.tar", "whisper-large-v3"),
         ("audio_separator.tar", "audio_separator")
     ]
@@ -71,7 +70,7 @@ def ensure_model_weights():
             print(f"[!] {extracted_name} not found, downloading...")
             download_weights(f"{BASE_URL}{tar_name}", str(target_path))
         else:
-            print(f"[✓] {extracted_name} already exists, skipping download")
+            print(f"[✓] {extracted_name} already exists")
 
 # Import after environment setup
 import torch
@@ -89,60 +88,8 @@ class Predictor(BasePredictor):
         # Add humo module to Python path
         sys.path.insert(0, str(Path.cwd()))
         
-        # Import HuMo modules
-        try:
-            from humo.models.humo_model import HuMoModel
-            from humo.utils.config_utils import load_config
-            from humo.utils.inference_utils import prepare_inputs, generate_video
-            
-            print("[✓] HuMo modules imported successfully")
-            
-            # Load model configuration
-            config_path = "humo/configs/inference/generate.yaml"
-            self.config = load_config(config_path)
-            
-            # Initialize model
-            print("[!] Loading HuMo 17B model...")
-            self.model = HuMoModel.from_pretrained(
-                f"{MODEL_CACHE}/HuMo",
-                torch_dtype=torch.bfloat16,
-                device_map="auto"
-            )
-            print("[✓] HuMo model loaded successfully")
-            
-            # Load auxiliary models
-            print("[!] Loading auxiliary models...")
-            
-            # VAE and Text Encoder (Wan2.1)
-            from diffusers import AutoencoderKL
-            from transformers import T5EncoderModel, T5Tokenizer
-            
-            self.vae = AutoencoderKL.from_pretrained(
-                f"{MODEL_CACHE}/Wan2.1-T2V-1.3B/vae",
-                torch_dtype=torch.bfloat16
-            ).to("cuda")
-            
-            self.text_encoder = T5EncoderModel.from_pretrained(
-                f"{MODEL_CACHE}/Wan2.1-T2V-1.3B/text_encoder",
-                torch_dtype=torch.bfloat16
-            ).to("cuda")
-            
-            self.tokenizer = T5Tokenizer.from_pretrained(
-                f"{MODEL_CACHE}/Wan2.1-T2V-1.3B/tokenizer"
-            )
-            
-            # Whisper for audio processing
-            import whisper
-            self.whisper_model = whisper.load_model(
-                "large-v3", 
-                download_root=f"{MODEL_CACHE}/whisper-large-v3"
-            )
-            
-            print("[✓] All models loaded successfully")
-            
-        except Exception as e:
-            print(f"[ERROR] Failed to load models: {str(e)}")
-            raise
+        print("[✓] HuMo setup complete - using generate.py for inference")
+        self.model_loaded = True
 
     def predict(
         self,
@@ -194,7 +141,7 @@ class Predictor(BasePredictor):
         scale_a: float = Input(
             description="Audio guidance strength (higher = better audio synchronization)",
             default=1.0,
-            ge=0.0, 
+            ge=0.0,
             le=2.0
         ),
         seed: int = Input(
@@ -206,10 +153,6 @@ class Predictor(BasePredictor):
         
         if seed == -1:
             seed = int(time.time())
-        
-        # Set random seeds
-        torch.manual_seed(seed)
-        np.random.seed(seed)
         
         print(f"[!] Generating video with mode: {mode}")
         print(f"[~] Resolution: {width}x{height}, Frames: {frames}, Steps: {steps}")
@@ -224,67 +167,80 @@ class Predictor(BasePredictor):
             if mode in ["text_audio", "text_image_audio"] and audio is None:
                 raise ValueError(f"Mode '{mode}' requires an input audio file")
             
-            # Update config with user parameters
-            self.config.generation.frames = frames
-            self.config.generation.height = height
-            self.config.generation.width = width  
-            self.config.generation.scale_t = scale_t
-            self.config.generation.scale_a = scale_a
-            self.config.generation.mode = {
-                "text_only": "T",
-                "text_image": "TI", 
-                "text_audio": "TA",
-                "text_image_audio": "TIA"
-            }[mode]
-            self.config.diffusion.timesteps.sampling.steps = steps
+            # Create temporary directory for processing
+            temp_dir = Path(tempfile.mkdtemp())
+            output_path = temp_dir / "output.mp4"
             
-            # Prepare inputs
-            from humo.utils.inference_utils import prepare_inputs, generate_video
+            # Create test case configuration
+            test_case = {
+                "case_1": {
+                    "prompt": prompt,
+                    "img_paths": [str(image)] if image else [],
+                    "audio_path": str(audio) if audio else ""
+                }
+            }
             
-            inputs = prepare_inputs(
-                prompt=prompt,
-                image_path=str(image) if image else None,
-                audio_path=str(audio) if audio else None,
-                config=self.config,
-                tokenizer=self.tokenizer,
-                whisper_model=self.whisper_model if audio else None
-            )
+            test_case_path = temp_dir / "test_case.json"
+            with open(test_case_path, "w") as f:
+                json.dump(test_case, f, indent=2)
             
-            print("[!] Starting video generation...")
+            # Set generation parameters via environment or config modification
+            os.environ.update({
+                "HUMO_FRAMES": str(frames),
+                "HUMO_HEIGHT": str(height),
+                "HUMO_WIDTH": str(width),
+                "HUMO_STEPS": str(steps),
+                "HUMO_SCALE_T": str(scale_t),
+                "HUMO_SCALE_A": str(scale_a),
+                "HUMO_SEED": str(seed)
+            })
+            
+            print("[!] Starting video generation using HuMo generate.py...")
             generation_start = time.time()
             
-            # Generate video
-            with torch.inference_mode():
-                video_frames = generate_video(
-                    model=self.model,
-                    vae=self.vae, 
-                    text_encoder=self.text_encoder,
-                    inputs=inputs,
-                    config=self.config,
-                    device="cuda"
-                )
+            # Determine which generate script to use based on mode
+            if mode == "text_audio" or (mode == "text_image_audio" and audio):
+                generate_script = "humo/generate.py"
+            else:
+                generate_script = "humo/generate.py"  # Default to main script
+            
+            # Run HuMo generation
+            cmd = [
+                "python", generate_script,
+                "--config_path", "humo/configs/inference/generate.yaml",
+                "--test_case_path", str(test_case_path),
+                "--output_dir", str(temp_dir),
+                "--case_name", "case_1"
+            ]
+            
+            print(f"[~] Running: {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(Path.cwd()))
+            
+            if result.returncode != 0:
+                print(f"[ERROR] Generation failed:")
+                print(f"STDOUT: {result.stdout}")
+                print(f"STDERR: {result.stderr}")
+                raise RuntimeError(f"HuMo generation failed with return code {result.returncode}")
             
             generation_time = time.time() - generation_start
             print(f"[✓] Video generation completed in {generation_time:.1f}s")
             
-            # Save video
-            output_path = Path(tempfile.mkdtemp()) / "output.mp4"
+            # Find the generated video file
+            generated_files = list(temp_dir.glob("*.mp4"))
+            if not generated_files:
+                raise RuntimeError("No video file was generated")
             
-            from humo.utils.video_utils import save_video
-            save_video(
-                video_frames,
-                str(output_path),
-                fps=25,  # HuMo is trained at 25 FPS
-                audio_path=str(audio) if audio and mode in ["text_audio", "text_image_audio"] else None
-            )
+            generated_video = generated_files[0]
+            final_output = temp_dir / "humo_output.mp4"
+            generated_video.rename(final_output)
             
-            print(f"[✓] Video saved to {output_path}")
+            print(f"[✓] Video saved to {final_output}")
             
             # Clean up GPU memory
             torch.cuda.empty_cache()
             gc.collect()
             
-            return CogPath(output_path)
+            return CogPath(final_output)
             
         except Exception as e:
             print(f"[ERROR] Video generation failed: {str(e)}")
