@@ -85,15 +85,17 @@ class Predictor(BasePredictor):
         # Ensure all model weights are available
         ensure_model_weights()
         
-        # Add humo module to Python path
+        # Add project and humo folders to Python path
         sys.path.insert(0, str(Path.cwd()))
+        sys.path.insert(0, str(Path.cwd() / 'humo'))
+        os.environ['PYTHONPATH'] = str(Path.cwd() / 'humo') + os.pathsep + os.environ.get('PYTHONPATH', '')
         
         print("[!] Importing HuMo modules...")
         from omegaconf import OmegaConf
         from humo.generate import Generator
         
         # Load configuration
-        config_path = "humo/configs/inference/generate.yaml"
+        config_path = "humo/configs/inference/generate_single_gpu.yaml"
         self.config = OmegaConf.load(config_path)
         
         # Initialize HuMo Generator
