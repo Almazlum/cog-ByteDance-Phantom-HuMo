@@ -96,12 +96,12 @@ class Predictor(BasePredictor):
         os.environ.setdefault("MASTER_PORT", "29500")
         os.environ.setdefault("RANK", "0")
         os.environ.setdefault("WORLD_SIZE", "1")
-        from omegaconf import OmegaConf
+        from humo.common.config import load_config
         from humo.generate import Generator
         
         # Load configuration
         config_path = "humo/configs/inference/generate_single_gpu.yaml"
-        self.config = OmegaConf.load(config_path)
+        self.config = load_config(config_path)
         
         # Initialize HuMo Generator
         print("[!] Initializing HuMo generator...")
