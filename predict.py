@@ -91,6 +91,11 @@ class Predictor(BasePredictor):
         os.environ['PYTHONPATH'] = str(Path.cwd() / 'humo') + os.pathsep + os.environ.get('PYTHONPATH', '')
         
         print("[!] Importing HuMo modules...")
+        # Ensure torch.distributed can init in single-GPU mode
+        os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
+        os.environ.setdefault("MASTER_PORT", "29500")
+        os.environ.setdefault("RANK", "0")
+        os.environ.setdefault("WORLD_SIZE", "1")
         from omegaconf import OmegaConf
         from humo.generate import Generator
         
