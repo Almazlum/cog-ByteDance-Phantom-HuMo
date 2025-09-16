@@ -57,7 +57,6 @@ from humo.models.utils.utils import tensor_to_video, prepare_json_dataset
 from contextlib import contextmanager
 import torch.cuda.amp as amp
 from humo.models.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
-from humo.utils.audio_processor_whisper import AudioProcessor
 from humo.utils.wav2vec import linear_interpolation_fps
 
 
@@ -194,6 +193,7 @@ class Generator():
             raise ValueError(f"Unsupported height {self.config.generation.height} for zero-vae.")
     
     def configure_wav2vec(self, device=get_device()):
+        from humo.utils.audio_processor_whisper import AudioProcessor
         audio_separator_model_file = self.config.audio.vocal_separator
         wav2vec_model_path = self.config.audio.wav2vec_model
 
