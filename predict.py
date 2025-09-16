@@ -9,6 +9,15 @@ import gc
 import subprocess
 import time
 import json
+import wave
+
+def make_silent_wav(path: str, duration_s: float = 4.0, sample_rate: int = 16000):
+    nframes = int(duration_s * sample_rate)
+    with wave.open(path, "w") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)  # 16-bit PCM
+        wf.setframerate(sample_rate)
+        wf.writeframes(b"\x00\x00" * nframes)
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -182,6 +191,14 @@ class Predictor(BasePredictor):
         print(f"[~] Seed: {seed}")
         
         try:
+            # Normalize to backend-supported modes (TA, TIA)
+            MODE_MAP = {
+                "text_only": "TA",
+                "text_audio": "TA",
+                "text_image": "TIA",
+                "text_image_audio": "TIA",
+            }
+            backend_mode = MODE_MAP.get(mode, "TA")
             # Validate inputs based on mode
             if mode in ["text_image", "text_image_audio"] and image is None:
                 raise ValueError(f"Mode '{mode}' requires an input image")
@@ -190,30 +207,32 @@ class Predictor(BasePredictor):
                 raise ValueError(f"Mode '{mode}' requires an input audio file")
             
             # Update config with user parameters
+            # Ensure audio exists for backend modes that require it
+            temp_dir = Path(tempfile.mkdtemp())
+            if backend_mode in ("TA", "TIA") and (audio is None):
+                silent_wav_path = temp_dir / "silent.wav"
+                make_silent_wav(str(silent_wav_path), duration_s=max(frames/25.0, 4.0))
+                audio = CogPath(str(silent_wav_path))
             self.config.generation.frames = frames
             self.config.generation.height = height  
             self.config.generation.width = width
             self.config.generation.scale_t = scale_t
             self.config.generation.scale_a = scale_a
             self.config.diffusion.timesteps.sampling.steps = steps
+            # Toggle audio feature extraction depending on mode
+            if hasattr(self.config.generation, "extract_audio_feat"):
+                self.config.generation.extract_audio_feat = (backend_mode in ("TA","TIA"))
             
             # Set mode based on inputs
-            if mode == "text_only":
-                self.config.generation.mode = "T"
-            elif mode == "text_image":
-                self.config.generation.mode = "TI"
-            elif mode == "text_audio":
-                self.config.generation.mode = "TA"  
-            elif mode == "text_image_audio":
-                self.config.generation.mode = "TIA"
+            self.config.generation.mode = backend_mode
             
             # Create temporary test case
             temp_dir = Path(tempfile.mkdtemp())
             test_case = {
                 "case_1": {
                     "prompt": prompt,
-                    "img_paths": [str(image)] if image else [],
-                    "audio_path": str(audio) if audio else ""
+                    "img_paths": [str(image)] if (backend_mode=="TIA" and image) else [],
+                    "audio_path": str(audio) if backend_mode in ("TA","TIA") else ""
                 }
             }
             
