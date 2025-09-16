@@ -178,8 +178,8 @@ cython_debug/
 /weights/*
 /weights_backup/
 /weights_backup/*
-checkpoints/
-models/
+/checkpoints/
+/models/
 
 # Media files
 *.png
