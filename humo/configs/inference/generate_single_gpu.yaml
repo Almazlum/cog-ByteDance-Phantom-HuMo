@@ -8,6 +8,7 @@ dit:
     __object__:
       path: humo.models.wan_modules.model_humo
       name: WanModel
+      args: as_params
       model_type: t2v
     insert_audio: True
   zero_vae_path: ./weights/HuMo/zero_vae_129frame.pt
