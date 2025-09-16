@@ -8,6 +8,7 @@ dit:
     __object__:
       path: humo.models.wan_modules.model_humo
       name: WanModel
+      model_type: t2v
     insert_audio: True
   zero_vae_path: ./weights/HuMo/zero_vae_129frame.pt
   zero_vae_720p_path: ./weights/HuMo/zero_vae_720p_161frame.pt
@@ -59,8 +60,8 @@ audio:
   wav2vec_model: ./weights/whisper-large-v3
 
 generation:
-  mode: "TIA"  # TA, TIA
-  extract_audio_feat: True
+  mode: "T"  # TA, TIA
+  extract_audio_feat: False
   seed: 666666
   frames: 97
   fps: 25
