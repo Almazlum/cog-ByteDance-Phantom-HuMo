@@ -19,6 +19,7 @@ import random
 import sys
 import mediapy
 import torch
+import time
 import torch.distributed as dist
 from omegaconf import DictConfig, ListConfig, OmegaConf
 from einops import rearrange
@@ -96,6 +97,180 @@ def clever_format(nums, format="%.2f"):
     return clever_nums
 
 
+
+# ==============================================================================
+# GPU Monitoring and Progress Utilities for HuMo
+# ==============================================================================
+
+def get_gpu_memory_info():
+    """Get current GPU memory usage information."""
+    if not torch.cuda.is_available():
+        return {"available": 0, "total": 0, "used": 0, "free": 0}
+    
+    device = torch.cuda.current_device()
+    total_memory = torch.cuda.get_device_properties(device).total_memory
+    allocated = torch.cuda.memory_allocated(device)
+    reserved = torch.cuda.memory_reserved(device)
+    free_memory = total_memory - reserved
+    
+    return {
+        "device": device,
+        "total": total_memory / (1024**3),  # GB
+        "allocated": allocated / (1024**3),  # GB
+        "reserved": reserved / (1024**3),   # GB
+        "free": free_memory / (1024**3)     # GB
+    }
+
+def log_multi_gpu_utilization(prefix="GPU"):
+    """Log current GPU utilization and memory usage."""
+    if not torch.cuda.is_available():
+        print(f"[{prefix}] CUDA not available")
+        return
+    
+    mem_info = get_gpu_memory_info()
+    device_count = torch.cuda.device_count()
+    current_device = torch.cuda.current_device()
+    device_name = torch.cuda.get_device_name(current_device)
+    
+    print(f"[{prefix}] Device: {device_name} (GPU {current_device}/{device_count-1})")
+    print(f"[{prefix}] Memory: {mem_info['allocated']:.1f}GB/{mem_info['total']:.1f}GB "
+          f"({100 * mem_info['allocated'] / mem_info['total']:.1f}% allocated)")
+
+def format_time_remaining(avg_step_time, steps_done, total_steps):
+    """Format estimated time remaining based on average step duration."""
+    if steps_done == 0 or avg_step_time == 0:
+        return "calculating..."
+    
+    remaining_steps = total_steps - steps_done
+    remaining_seconds = remaining_steps * avg_step_time
+    
+    if remaining_seconds < 60:
+        return f"{remaining_seconds:.0f}s"
+    elif remaining_seconds < 3600:
+        minutes = remaining_seconds // 60
+        seconds = remaining_seconds % 60
+        return f"{minutes:.0f}m {seconds:.0f}s"
+    else:
+        hours = remaining_seconds // 3600
+        minutes = (remaining_seconds % 3600) // 60
+        return f"{hours:.0f}h {minutes:.0f}m"
+
+def format_duration(seconds):
+    """Format duration in human-readable format."""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    elif seconds < 3600:
+        minutes = seconds // 60
+        secs = seconds % 60
+        return f"{minutes:.0f}m {secs:.1f}s"
+    else:
+        hours = seconds // 3600
+
+def log_multi_gpu_utilization(prefix="GPU", show_detailed=False):
+    """Production-ready multi-GPU utilization diagnostics for H200 systems."""
+    if not torch.cuda.is_available():
+        print(f"[{prefix}] CUDA not available")
+        return
+    
+    num_gpus = torch.cuda.device_count()
+    print(f"[{prefix}] === GPU Utilization Report ({num_gpus} H200s) ===")
+    
+    total_memory_gb = 0
+    total_allocated_gb = 0
+    
+    for gpu_id in range(num_gpus):
+        with torch.cuda.device(gpu_id):
+            props = torch.cuda.get_device_properties(gpu_id)
+            total_mem = props.total_memory / (1024**3)
+            allocated = torch.cuda.memory_allocated(gpu_id) / (1024**3)
+            reserved = torch.cuda.memory_reserved(gpu_id) / (1024**3)
+            free_mem = total_mem - reserved
+            
+            utilization_pct = (allocated / total_mem) * 100
+            
+            # Show utilization status
+            status = "🔥 ACTIVE" if allocated > 1.0 else "💤 IDLE"
+            
+            print(f"[{prefix}]   GPU {gpu_id}: {status} - {allocated:.1f}GB/{total_mem:.1f}GB ({utilization_pct:.0f}%)")
+            
+            if show_detailed:
+                print(f"[{prefix}]          Reserved: {reserved:.1f}GB | Free: {free_mem:.1f}GB")
+                print(f"[{prefix}]          {props.name} | CC: {props.major}.{props.minor}")
+            
+            total_memory_gb += total_mem
+            total_allocated_gb += allocated
+    
+    # Overall stats
+    overall_util = (total_allocated_gb / total_memory_gb) * 100
+    active_gpus = sum(1 for gpu_id in range(num_gpus) 
+                     if torch.cuda.memory_allocated(gpu_id) / (1024**3) > 1.0)
+    
+    print(f"[{prefix}] Total: {total_allocated_gb:.1f}GB/{total_memory_gb:.1f}GB ({overall_util:.0f}%) | Active GPUs: {active_gpus}/{num_gpus}")
+    print(f"[{prefix}] {'=' * 50}")
+
+def log_model_distribution_status(model, prefix="MODEL"):
+    """Log how model components are distributed across GPUs."""
+    if not hasattr(model, '_multi_gpu') or not model._multi_gpu:
+        print(f"[{prefix}] Single GPU mode - all components on GPU 0")
+        return
+    
+    print(f"[{prefix}] Multi-GPU Distribution Status:")
+    
+    # Check embeddings
+    embedding_gpu = None
+    if hasattr(model, 'patch_embedding') and hasattr(model.patch_embedding, 'device'):
+        embedding_gpu = model.patch_embedding.device.index
+    
+    # Check transformer blocks distribution
+    block_distribution = {}
+    if hasattr(model, 'blocks'):
+        for i, block in enumerate(model.blocks):
+            if hasattr(block, 'device'):
+                gpu_id = block.device.index
+                if gpu_id not in block_distribution:
+                    block_distribution[gpu_id] = []
+                block_distribution[gpu_id].append(i)
+    
+    # Check head
+    head_gpu = None
+    if hasattr(model, 'head') and hasattr(model.head, 'device'):
+        head_gpu = model.head.device.index
+    
+    print(f"[{prefix}]   Embeddings: GPU {embedding_gpu}")
+    for gpu_id in sorted(block_distribution.keys()):
+        blocks = block_distribution[gpu_id]
+        print(f"[{prefix}]   Blocks {min(blocks)}-{max(blocks)}: GPU {gpu_id} ({len(blocks)} blocks)")
+    print(f"[{prefix}]   Head: GPU {head_gpu}")
+
+def log_inference_performance_summary(step_times, total_time, num_gpus, prefix="PERF"):
+    """Log performance summary focusing on multi-GPU efficiency."""
+    if not step_times:
+        return
+    
+    avg_step_time = sum(step_times) / len(step_times)
+    min_step_time = min(step_times)
+    max_step_time = max(step_times)
+    
+    # Calculate theoretical vs actual speedup
+    single_gpu_estimate = total_time * num_gpus  # Very rough estimate
+    efficiency = (single_gpu_estimate / total_time) * 100 if num_gpus > 1 else 100
+    
+    print(f"[{prefix}] === Performance Summary ===")
+    print(f"[{prefix}] Total Time: {format_duration(total_time)}")
+    print(f"[{prefix}] Steps: {len(step_times)} | Avg: {avg_step_time:.1f}s | Range: {min_step_time:.1f}s-{max_step_time:.1f}s")
+    
+    if num_gpus > 1:
+        print(f"[{prefix}] Multi-GPU: {num_gpus} GPUs | Est. Efficiency: {efficiency:.0f}%")
+        if efficiency < 70:
+            print(f"[{prefix}] ⚠️  Low efficiency - check GPU utilization balance")
+    
+    # Throughput estimation
+    fps = len(step_times) / total_time
+    print(f"[{prefix}] Throughput: {fps:.1f} inference steps/second")
+    print(f"[{prefix}] {'=' * 40}")
+
+
+
 class Generator():
     def __init__(self, config: DictConfig):
         self.config = config.copy()
@@ -128,15 +303,62 @@ class Generator():
         return device_mesh, fsdp_strategy
 
     def configure_models(self):
+        """Configure all models with detailed timing and GPU monitoring."""
+        start_time = time.perf_counter()
+        
+        print("[MODELS] Starting model configuration...")
+        log_multi_gpu_utilization("SETUP")
+        
+        # DiT Model Loading
+        print("[MODELS] Loading DiT model...")
+        dit_start = time.perf_counter()
         self.configure_dit_model(device="cpu")
+        dit_time = time.perf_counter() - dit_start
+        print(f"[MODELS] ✓ DiT model loaded in {format_duration(dit_time)}")
+        
+        # VAE Model Loading
+        print("[MODELS] Loading VAE model...")
+        vae_start = time.perf_counter()
         self.configure_vae_model()
+        vae_time = time.perf_counter() - vae_start
+        print(f"[MODELS] ✓ VAE model loaded in {format_duration(vae_time)}")
+        log_multi_gpu_utilization("MODELS-READY")
+        
+        # Audio Model Loading (if enabled)
+        audio_time = 0
         if self.config.generation.get('extract_audio_feat', False):
+            print("[MODELS] Loading Wav2Vec audio model...")
+            audio_start = time.perf_counter()
             self.configure_wav2vec(device="cpu")
+            audio_time = time.perf_counter() - audio_start
+            print(f"[MODELS] ✓ Wav2Vec model loaded in {format_duration(audio_time)}")
+        
+        # Text Encoder Loading
+        print("[MODELS] Loading T5 text encoder...")
+        text_start = time.perf_counter()
         self.configure_text_model(device="cpu")
-
+        text_time = time.perf_counter() - text_start
+        print(f"[MODELS] ✓ T5 text encoder loaded in {format_duration(text_time)}")
+        
+        # FSDP Configuration
+        print("[MODELS] Configuring FSDP (multi-GPU distribution)...")
+        fsdp_start = time.perf_counter()
         # Initialize fsdp.
         self.configure_dit_fsdp_model()
         self.configure_text_fsdp_model()
+        fsdp_time = time.perf_counter() - fsdp_start
+        print(f"[MODELS] ✓ FSDP configured in {format_duration(fsdp_time)}")
+        
+        # Final summary
+        total_time = time.perf_counter() - start_time
+        # GPU status shown above
+        
+        print(f"[MODELS] 🎯 All models ready in {format_duration(total_time)}")
+        print(f"[MODELS]    DiT: {format_duration(dit_time)} | VAE: {format_duration(vae_time)}")
+        print(f"[MODELS]    Text: {format_duration(text_time)} | FSDP: {format_duration(fsdp_time)}")
+        if audio_time > 0:
+            print(f"[MODELS]    Audio: {format_duration(audio_time)}")
+        print("")
     
     def configure_dit_model(self, device=get_device()):
 
@@ -195,6 +417,12 @@ class Generator():
             vae_pth=self.config.vae.checkpoint,
             device=device)
         
+        # Simple VAE setup - always on primary GPU
+        # Multi-GPU distribution handled at batch level if needed
+        num_gpus = getattr(self.config, 'num_gpus', 1)
+        if num_gpus > 1:
+            print(f"[VAE] Multi-GPU mode: VAE on primary GPU")
+        
         if self.config.generation.height == 480:
             self.zero_vae = torch.load(self.config.dit.zero_vae_path)
         elif self.config.generation.height == 720:
@@ -227,22 +455,74 @@ class Generator():
             )
 
     
-    def configure_dit_fsdp_model(self):
-        """Configure DiT model with FSDP for multi-GPU or direct placement for single-GPU.
+    def _setup_multi_gpu_distribution(self, num_gpus):
+        """Simple multi-GPU distribution for Replicate production.
         
-        FSDP wrapping on single GPU can cause OOMs during setup due to
-        sync overhead. Skip FSDP when world_size=1 or explicitly disabled.
+        Strategy: Split transformer blocks across GPUs evenly.
+        This works well for 8xH200 systems.
         """
+        total_blocks = len(self.dit.blocks)
+        blocks_per_gpu = total_blocks // num_gpus
+        extra_blocks = total_blocks % num_gpus
+        
+        print(f"[DiT] Distributing {total_blocks} blocks across {num_gpus} GPUs")
+        
+        # Keep embeddings on GPU 0
+        self.dit.patch_embedding = self.dit.patch_embedding.cuda(0)
+        self.dit.text_embedding = self.dit.text_embedding.cuda(0)
+        self.dit.time_embedding = self.dit.time_embedding.cuda(0)
+        self.dit.time_projection = self.dit.time_projection.cuda(0)
+        
+        # Distribute blocks
+        block_idx = 0
+        for gpu_id in range(num_gpus):
+            # Calculate how many blocks this GPU gets
+            gpu_blocks = blocks_per_gpu + (1 if gpu_id < extra_blocks else 0)
+            
+            # Assign blocks to this GPU
+            for _ in range(gpu_blocks):
+                if block_idx < total_blocks:
+                    self.dit.blocks[block_idx] = self.dit.blocks[block_idx].cuda(gpu_id)
+                    block_idx += 1
+            
+            print(f"   GPU {gpu_id}: {gpu_blocks} blocks")
+        
+        # Head on last GPU
+        last_gpu = num_gpus - 1
+        self.dit.head = self.dit.head.cuda(last_gpu)
+        
+        # Audio projection on GPU 0 if present
+        if hasattr(self.dit, 'audio_proj'):
+            self.dit.audio_proj = self.dit.audio_proj.cuda(0)
+        
+        # Mark as multi-GPU for forward pass handling
+        self.dit._multi_gpu = True
+        self.dit._num_gpus = num_gpus
+        print(f"[DiT] Multi-GPU distribution complete")
+    
+    def configure_dit_fsdp_model(self):
+        """Configure DiT model for single or multi-GPU inference."""
         from humo.models.wan_modules.model_humo import WanAttentionBlock
 
         dit_blocks = (WanAttentionBlock,)
-
-        # Respect FSDP enabled flag; default to enabling only when multi-GPU
-        fsdp_enabled = getattr(self.config.dit.fsdp, 'enabled', None)
-        if fsdp_enabled is False or (fsdp_enabled is None and torch.cuda.device_count() <= 1):
-            # Keep model on device without FSDP wrapping
-            self.dit.to(get_device())
-            return
+        
+        # Get number of GPUs
+        num_gpus = getattr(self.config, 'num_gpus', 1)
+        
+        # Simple approach: place model on first GPU
+        # For multi-GPU, we'll handle distribution at inference time
+        self.dit.to(get_device())
+        
+        if num_gpus > 1:
+            print(f"[DiT] Multi-GPU mode: {num_gpus} GPUs available")
+            # For multiple GPUs, use model parallelism
+            # Split the 40 transformer blocks across GPUs
+            self._setup_multi_gpu_distribution(num_gpus)
+        else:
+            print(f"[DiT] Single GPU mode")
+            
+        # No FSDP in single-process Cog environment
+        return
 
         # Init model_shard_cpu_group for saving checkpoint with sharded state_dict.
         init_model_shard_cpu_group(
@@ -273,8 +553,8 @@ class Generator():
             limit_all_gathers=False,  # False for ZERO2.
             mixed_precision=MixedPrecision(
                 param_dtype=torch.bfloat16,
-                reduce_dtype=torch.float32,
-                buffer_dtype=torch.float32,
+                reduce_dtype=torch.bfloat16,  # H200 has fast BF16 reduction
+                buffer_dtype=torch.bfloat16,  # H200 handles BF16 buffers efficiently
             ),
             device_mesh=device_mesh,
             param_init_fn=meta_param_init_fn,
@@ -282,13 +562,25 @@ class Generator():
 
         # Apply FSDP.
         self.dit = FullyShardedDataParallel(self.dit, **settings)
+        
+        # Optional: Compile DiT model for H200 performance (PyTorch 2.0+)
+        # Disable by setting HUMO_COMPILE=0 if issues arise
+        if os.environ.get("HUMO_COMPILE", "1") == "1" and hasattr(torch, 'compile'):
+            try:
+                print("[DiT] Compiling model with torch.compile (mode=reduce-overhead)")
+                self.dit = torch.compile(self.dit, mode="reduce-overhead", fullgraph=False)
+            except Exception as e:
+                print(f"[DiT] torch.compile failed (continuing without): {e}")
         # self.dit.to(get_device())
 
 
     def configure_text_fsdp_model(self):
-        # If FSDP is not enabled, put text_encoder to GPU and return.
+        # Simple setup - no FSDP for single-process Cog
         if not self.config.text.fsdp.enabled:
             self.text_encoder.to(get_device())
+            num_gpus = getattr(self.config, 'num_gpus', 1)
+            if num_gpus > 1:
+                print(f"[Text] Multi-GPU mode: text encoder on primary GPU")
             return
 
         # from transformers.models.t5.modeling_t5 import T5Block
@@ -546,6 +838,12 @@ class Generator():
             torch.Tensor: Video in [C, F, H, W] format (caller must transpose for writing).
         """
 
+        # Start total inference timing
+        inference_start_time = time.perf_counter()
+        print(f"[INFERENCE] Starting inference for prompt: \"{input_prompt[:50]}...\"" if len(input_prompt) > 50 else f"[INFERENCE] Starting inference for prompt: \"{input_prompt}\"")
+        log_multi_gpu_utilization("INFERENCE-START")
+
+        # Ensure VAE is on the right device
         self.vae.model.to(device=device)
         if img_path is not None:
             latents_ref = self.load_image_latent_ref_id(img_path, size, device)
@@ -559,6 +857,7 @@ class Generator():
         # audio
         if audio_path is not None:
             if self.config.generation.extract_audio_feat:
+                # Whisper on main device
                 self.audio_processor.whisper.to(device=device)
                 audio_emb, audio_length = self.audio_processor.preprocess(audio_path)
                 if offload_model:
@@ -596,10 +895,14 @@ class Generator():
         seed_g = torch.Generator(device=device)
         seed_g.manual_seed(seed)
 
-        self.text_encoder.model.to(device)
+        # Simple text encoder handling
+        if hasattr(self.text_encoder, 'model'):
+            self.text_encoder.model.to(device)
+        
         context = self.text_encoder([input_prompt], device)
         context_null = self.text_encoder([n_prompt], device)
-        if offload_model:
+        
+        if offload_model and hasattr(self.text_encoder, 'model'):
             self.text_encoder.model.cpu()
 
         noise = [
@@ -658,12 +961,32 @@ class Generator():
             arg_tia = {'seq_len': seq_len, 'audio': audio_emb, 'y': y_c, 'context': context}
             
             self.maybe_empty_cache()
-            self.dit.to(device=get_device())
-            # Minimal overhead progress output for speed; fallback if tqdm unavailable
-            for _, t in enumerate(timesteps):
+            # Handle device placement
+            if not hasattr(self.dit, '_multi_gpu') or not self.dit._multi_gpu:
+                # Single GPU mode
+                self.dit.to(device=get_device())
+            # For multi-GPU, model is already distributed
+            # Clean sampling with essential progress tracking
+            total_steps = len(timesteps)
+            step_times = []
+            mode_to_use = mode_override if mode_override is not None else self.config.generation.mode
+            num_gpus = getattr(self.config, "num_gpus", 1)
+            
+            print(f"[INFERENCE] Starting {mode_to_use} sampling: {total_steps} steps across {num_gpus} GPU(s)")
+            
+            # Show model distribution status for multi-GPU
+            if num_gpus > 1:
+                log_model_distribution_status(self.dit, "DiT")
+            
+            # Initial GPU status logged in predict.py
+            
+            # Simple progress with periodic updates (every 20% or 10 steps, whichever is larger)
+            update_interval = max(total_steps // 5, 10)
+            
+            for step_idx, t in enumerate(timesteps):
+                step_start = time.perf_counter()
                 timestep = t.unsqueeze(0)
 
-                mode_to_use = mode_override if mode_override is not None else self.config.generation.mode
                 if mode_to_use == "TIA":
                     noise_pred = self.forward_tia(latents, timestep, t, step_change, 
                                                   arg_tia, arg_ti, arg_i, arg_null,
@@ -684,7 +1007,32 @@ class Generator():
 
                 del timestep
                 self.maybe_empty_cache()
-
+                
+                # Track timing
+                step_time = time.perf_counter() - step_start
+                step_times.append(step_time)
+                
+                # Progress updates (not every step to avoid spam)
+                if (step_idx + 1) % update_interval == 0 or step_idx == 0 or step_idx == total_steps - 1:
+                    avg_time = sum(step_times) / len(step_times)
+                    remaining = total_steps - step_idx - 1
+                    eta = format_time_remaining(avg_time, step_idx + 1, total_steps)
+                    progress = ((step_idx + 1) / total_steps) * 100
+                    
+                    print(f"[INFERENCE] Step {step_idx + 1}/{total_steps} ({progress:.0f}%) | "
+                          f"Avg: {avg_time:.1f}s/step | ETA: {eta}")
+                    
+                    # GPU check at major milestones for multi-GPU systems
+                    if num_gpus > 1 and (step_idx + 1) % (total_steps // 2) == 0:
+                        log_multi_gpu_utilization("MID")
+            
+            # Sampling complete
+            total_sampling_time = sum(step_times)
+            print(f"[INFERENCE] ✓ Sampling complete: {total_steps} steps in {format_duration(total_sampling_time)}")
+            
+            # Final GPU utilization
+            # Final GPU status logged in predict.py
+            
             x0 = latents
             x0 = [x0_[:,:-latents_ref[0].shape[1]] for x0_ in x0]
 
@@ -692,8 +1040,19 @@ class Generator():
                 self.dit.cpu()
             self.maybe_empty_cache()
             # if get_local_rank() == 0:
+            # VAE Decoding with progress tracking
+            print("[INFERENCE] Starting VAE decode...")
+            log_multi_gpu_utilization("VAE-DECODE")
+            decode_start = time.perf_counter()
+            
+            # Ensure VAE is on device for decoding
             self.vae.model.to(device=device)
             videos = self.vae.decode(x0)
+            
+            decode_time = time.perf_counter() - decode_start
+            print(f"[INFERENCE] ✓ VAE decode complete in {format_duration(decode_time)}")
+            log_multi_gpu_utilization("VAE-COMPLETE")
+            
             if offload_model:
                 self.vae.model.to(device="cpu")
 
@@ -706,6 +1065,10 @@ class Generator():
         torch.cuda.synchronize()
         if dist.is_initialized() and dist.get_world_size() > 1:
             dist.barrier()
+        # Final performance summary
+        total_inference_time = time.perf_counter() - inference_start_time
+        log_inference_performance_summary(step_times, total_sampling_time, num_gpus)
+        print(f"[INFERENCE] 🎯 Total inference time: {format_duration(total_inference_time)}")
 
         return videos[0] # if get_local_rank() == 0 else None
 

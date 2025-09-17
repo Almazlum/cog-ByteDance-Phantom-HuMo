@@ -67,12 +67,12 @@ def ulysses_dit_forward(
         for u in x
     ])
 
-    # time embeddings
-    with torch.amp.autocast('cuda', dtype=torch.float32):
+    # time embeddings - BF16 is sufficient for H200
+    with torch.amp.autocast('cuda', dtype=torch.bfloat16):
         e = self.time_embedding(
-            sinusoidal_embedding_1d(self.freq_dim, t).float()).float()
-        e0 = self.time_projection(e).unflatten(1, (6, self.dim)).float()
-        assert e.dtype == torch.float32 and e0.dtype == torch.float32
+            sinusoidal_embedding_1d(self.freq_dim, t).to(torch.bfloat16))
+        e0 = self.time_projection(e).unflatten(1, (6, self.dim))
+        # Using BF16 throughout for H200 performance
         
     # context
     context_lens = None

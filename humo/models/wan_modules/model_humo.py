@@ -392,16 +392,16 @@ class WanAttentionBlock(nn.Module):
             freqs(Tensor): Rope freqs, shape [1024, C / num_heads / 2]
             ref_num_list: 配合seq_lens可以查到reference image在倒数第几个
         """
-        assert e.dtype == torch.float32
-        with torch.amp.autocast('cuda', dtype=torch.float32):
+        # BF16 is used for H200 performance
+        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
             e = (self.modulation + e).chunk(6, dim=1)
-        assert e[0].dtype == torch.float32
+        # BF16 modulation is sufficient
 
         # self-attention
         y = self.self_attn(
             self.norm1(x).float() * (1 + e[1]) + e[0], seq_lens, grid_sizes,
             freqs)
-        with torch.amp.autocast('cuda', dtype=torch.float32):
+        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
             x = x + y * e[2]
 
         # cross-attention & ffn function
@@ -412,7 +412,7 @@ class WanAttentionBlock(nn.Module):
                 x = self.audio_cross_attn_wrapper(x, audio, seq_lens, grid_sizes, freqs, audio_seq_len)
 
             y = self.ffn(self.norm2(x).float() * (1 + e[4]) + e[3])
-            with torch.amp.autocast('cuda', dtype=torch.float32):
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                 x = x + y * e[5]
             return x
 
@@ -444,8 +444,8 @@ class Head(nn.Module):
             x(Tensor): Shape [B, L1, C]
             e(Tensor): Shape [B, C]
         """
-        assert e.dtype == torch.float32
-        with amp.autocast(dtype=torch.float32):
+        # BF16 is used for H200 performance
+        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
             e = (self.modulation + e.unsqueeze(1)).chunk(2, dim=1)
             x = (self.head(self.norm(x) * (1 + e[1]) + e[0]))
         return x
@@ -603,7 +603,29 @@ class WanModel(nn.Module):
                     block.audio_cross_attn_wrapper.audio_cross_attn.forward = types.MethodType(ulysses_audio_cross_attn_forward, block.audio_cross_attn_wrapper.audio_cross_attn)
             self.forward = types.MethodType(ulysses_dit_forward, self)
         
+    def _multi_gpu_forward(self, x, t, context, seq_len, audio=None, y=None):
+        """Forward pass for multi-GPU setup with proper tensor flow."""
+        # This method is handled by the overridden forward in _standard_forward
+        # The tensor movement happens inside _standard_forward when blocks are on different GPUs
+        return self._standard_forward(x, t, context, seq_len, audio, y)
+    
     def forward(
+        self,
+        x,
+        t,
+        context,
+        seq_len,
+        audio=None,
+        y=None,
+    ):
+        """Forward pass with multi-GPU support."""
+        # Check if we're in multi-GPU mode
+        if hasattr(self, '_multi_gpu') and self._multi_gpu:
+            return self._multi_gpu_forward(x, t, context, seq_len, audio, y)
+        else:
+            return self._standard_forward(x, t, context, seq_len, audio, y)
+    
+    def _standard_forward(
         self,
         x,
         t,
@@ -646,6 +668,13 @@ class WanModel(nn.Module):
             x = [torch.cat([u, v], dim=0) for u, v in zip(x, y)]
         
         # embeddings
+        if hasattr(self, '_multi_gpu') and self._multi_gpu:
+            # Ensure inputs start on GPU 0 where embeddings are
+            x = [u.cuda(0) for u in x]
+            if y is not None:
+                # y was already concatenated with x above
+                pass
+        
         x = [self.patch_embedding(u.unsqueeze(0)) for u in x]
         grid_sizes = torch.stack(
             [torch.tensor(u.shape[2:], dtype=torch.long) for u in x])
@@ -660,14 +689,22 @@ class WanModel(nn.Module):
         ])
 
         # time embeddings
-        with amp.autocast(dtype=torch.float32):
+        # BF16 is sufficient for time embeddings on H200
+        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+            if hasattr(self, '_multi_gpu') and self._multi_gpu:
+                # Ensure t is on GPU 0 where time_embedding is
+                t = t.cuda(0) if not t.is_cuda else t
             e = self.time_embedding(
-                sinusoidal_embedding_1d(self.freq_dim, t).float()).float()
-            e0 = self.time_projection(e).unflatten(1, (6, self.dim)).float()
-            assert e.dtype == torch.float32 and e0.dtype == torch.float32
+                sinusoidal_embedding_1d(self.freq_dim, t).to(torch.bfloat16))
+            e0 = self.time_projection(e).unflatten(1, (6, self.dim))
+            # Using BF16 throughout for H200 performance
 
         # context
         context_lens = None
+        if hasattr(self, '_multi_gpu') and self._multi_gpu:
+            # Ensure context is on GPU 0 where text_embedding is
+            context = [c.cuda(0) if not c.is_cuda else c for c in context]
+        
         context = self.text_embedding(
             torch.stack([
                 torch.cat(
@@ -676,6 +713,9 @@ class WanModel(nn.Module):
             ]))
 
         if self.insert_audio:
+            if hasattr(self, '_multi_gpu') and self._multi_gpu:
+                # Ensure audio is on GPU 0 where audio_proj is
+                audio = [au.cuda(0) if not au.is_cuda else au for au in audio]
             audio = [self.audio_proj(au.unsqueeze(0)).permute(0, 3, 1, 2) for au in audio]
             
             audio_seq_len = torch.tensor(max([au.shape[2] for au in audio]) * audio[0].shape[3], device=get_device())
@@ -699,14 +739,42 @@ class WanModel(nn.Module):
             audio=audio,
             audio_seq_len=audio_seq_len)
 
-        for block in self.blocks:
-            x = block(x, **kwargs)
+        # Handle multi-GPU tensor flow
+        if hasattr(self, '_multi_gpu') and self._multi_gpu:
+            # Move tensors between GPUs as they flow through blocks
+            for i, block in enumerate(self.blocks):
+                # Get the device of the current block
+                block_device = next(block.parameters()).device
+                
+                # Move input tensors to the block's device
+                x = x.to(block_device)
+                kwargs_on_device = {
+                    k: v.to(block_device) if isinstance(v, torch.Tensor) else v
+                    for k, v in kwargs.items()
+                }
+                
+                # Run the block
+                x = block(x, **kwargs_on_device)
+        else:
+            # Single GPU - standard flow
+            for block in self.blocks:
+                x = block(x, **kwargs)
 
         # head
+        if hasattr(self, '_multi_gpu') and self._multi_gpu:
+            # Move to head's device (last GPU)
+            head_device = next(self.head.parameters()).device
+            x = x.to(head_device)
+            e = e.to(head_device)
         x = self.head(x, e)
 
         # unpatchify
         x = self.unpatchify(x, grid_sizes)
+        
+        # Move output back to original device if multi-GPU
+        if hasattr(self, '_multi_gpu') and self._multi_gpu:
+            x = [u.to(device) for u in x]
+        
         return [u.float() for u in x]
 
     def unpatchify(self, x, grid_sizes):

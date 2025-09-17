@@ -6,6 +6,7 @@ import subprocess
 import numpy as np
 import time
 from typing import Optional
+from tqdm import tqdm
 
 from cog import BasePredictor, Input, Path as CPath
 from pathlib import Path
@@ -104,7 +105,11 @@ def download_weights():
 
 
 def setup_gpu_environment():
-    """Detect GPU count and configure environment for optimal performance.
+    """Detect GPU count and configure environment for Replicate production.
+    
+    Simple approach:
+    - Single GPU: Normal operation
+    - Multiple GPUs: Model parallelism via device placement
     
     Returns:
         tuple: (num_gpus, sp_size) for config selection
@@ -117,38 +122,37 @@ def setup_gpu_environment():
     
     print(f"🔍 Detected {num_gpus} GPU(s): {gpu_names}")
     
-    # Configure environment for optimal performance
-    if num_gpus >= 4:
-        # High-end multi-GPU setup
-        gpu_ids = ','.join(str(i) for i in range(num_gpus))
-        sp_size = min(num_gpus, 8)
-        print(f"🚀 High-performance setup: {num_gpus} GPUs with sequence parallel")
-    elif num_gpus >= 2:
-        # Medium multi-GPU setup
-        gpu_ids = ','.join(str(i) for i in range(num_gpus))
-        sp_size = num_gpus
-        print(f"⚡ Multi-GPU setup: {num_gpus} GPUs")
-    else:
-        # Single GPU setup
-        gpu_ids = '0'
-        sp_size = 1
-        print(f"⚡ Single GPU setup: {gpu_names[0]}")
+    # Always use all available GPUs
+    gpu_ids = ','.join(str(i) for i in range(num_gpus))
     
-    # Set environment variables
+    if self.num_gpus > 1:
+        print(f"🚀 Multi-GPU: {num_gpus} H200s detected")
+        print(f"   All GPUs will be utilized for maximum performance")
+        # For Replicate production with 8xH200s
+        print(f"   GPUs: {gpu_ids}")
+    else:
+        print(f"⚡ Single GPU: {gpu_names[0]}")
+    
+    # Simple environment setup - no distributed complexity
     os.environ.update({
         'CUDA_VISIBLE_DEVICES': gpu_ids,
         'MASTER_ADDR': 'localhost',
         'MASTER_PORT': '12355',
         'RANK': '0',
-        'WORLD_SIZE': str(num_gpus),
+        'WORLD_SIZE': '1',  # Always single process for Cog/Replicate
         'LOCAL_RANK': '0',
         'PYTORCH_CUDA_ALLOC_CONF': 'expandable_segments:True'
     })
     
-    return num_gpus, sp_size
+    return num_gpus, 1  # sp_size=1 for single process
 
 
 class Predictor(BasePredictor):
+    """HuMo-17B Predictor optimized for Replicate production.
+    
+    Automatically detects and uses all available H200 GPUs.
+    On 8xH200 systems, the model will utilize all GPUs for maximum performance.
+    """
     def setup(self) -> None:
         """One-time model setup.
 
@@ -162,36 +166,50 @@ class Predictor(BasePredictor):
         
         # Configure GPU environment
         num_gpus, sp_size = setup_gpu_environment()
+        self.num_gpus = num_gpus  # Store for use in predict method
         torch.backends.cudnn.benchmark = True
-        # Performance knobs: enable TF32 and fused SDP kernels when available
+        # H200-specific optimizations
         if hasattr(torch.backends, 'cuda') and hasattr(torch.backends.cuda, 'matmul'):
             torch.backends.cuda.matmul.allow_tf32 = True
         if hasattr(torch.backends, 'cudnn') and hasattr(torch.backends.cudnn, 'allow_tf32'):
             torch.backends.cudnn.allow_tf32 = True
-        # Prefer Flash and Mem-Efficient SDP kernels on Hopper
+        
+        # Enable Hopper/H200 optimizations
         if hasattr(torch.backends.cuda, 'enable_flash_sdp'):
             torch.backends.cuda.enable_flash_sdp(True)
         if hasattr(torch.backends.cuda, 'enable_mem_efficient_sdp'):
             torch.backends.cuda.enable_mem_efficient_sdp(True)
         if hasattr(torch.backends.cuda, 'enable_math_sdp'):
             torch.backends.cuda.enable_math_sdp(False)
+        
+        # H200 specific: Enable FP8 for attention if available (requires PyTorch 2.4+)
+        if hasattr(torch.backends.cuda, 'enable_fp8_attention'):
+            torch.backends.cuda.enable_fp8_attention(True)
+            
+        # Use medium precision for better H200 performance (allows TensorCore usage)
         if hasattr(torch, 'set_float32_matmul_precision'):
-            torch.set_float32_matmul_precision("high")
+            torch.set_float32_matmul_precision("medium")
+            
+        # H200: Enable TMA (Tensor Memory Accelerator) if available
+        if hasattr(torch.cuda, 'set_tma_enabled'):
+            torch.cuda.set_tma_enabled(True)
         # Silence tokenizers fork warning to avoid overhead
         os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
         
         # Download weights
         download_weights()
         
-        # Load appropriate config based on GPU setup
-        if num_gpus > 1:
-            config = load_config("humo/configs/inference/generate.yaml")
-            config.dit.sp_size = sp_size
-            config.dit.fsdp.enabled = True
-            print(f"📊 Multi-GPU config: sp_size={sp_size}")
+        # Always use single GPU config for Replicate/Cog
+        config = load_config("humo/configs/inference/generate_single_gpu.yaml")
+        
+        # Store GPU count for the generator
+        config.num_gpus = num_gpus
+        
+        if self.num_gpus > 1:
+            print(f"📊 Multi-GPU mode: {num_gpus} H200s will be utilized")
+            print(f"   Model parallelism will be handled automatically")
         else:
-            config = load_config("humo/configs/inference/generate_single_gpu.yaml")
-            print("📊 Single GPU config")
+            print("📊 Single GPU mode")
         
         # Initialize generator
         self.generator = Generator(config)
@@ -311,6 +329,7 @@ class Predictor(BasePredictor):
         duration = num_frames / 25.0
         print(f"🎬 Generating {duration:.1f}s video ({width}x{height}, {num_frames} frames)")
         print(f"📝 Mode: {mode} (engine={generator_mode}) | Steps: {num_inference_steps} | Seed: {seed}")
+        print(f"🖥️  Hardware: {self.num_gpus}x H200 GPU(s) | Multi-GPU: {"Enabled" if self.num_gpus > 1 else "Single GPU"}")
 
         # Early validation: check file paths before expensive GPU operations
         if reference_image is not None:
@@ -325,6 +344,12 @@ class Predictor(BasePredictor):
         # Pass guidance scales as parameters (config is read-only)
 
         # Generate video using the configured model
+        # Show initial GPU status for multi-GPU validation
+        if self.num_gpus > 1:
+            from humo.generate import log_multi_gpu_utilization
+            print("\n🔍 Multi-GPU Status Check:")
+            log_multi_gpu_utilization("PRE-INFERENCE", show_detailed=False)
+        
         try:
             video_tensor = self.generator.inference(
                 input_prompt=prompt,
@@ -343,6 +368,11 @@ class Predictor(BasePredictor):
                 scale_a_override=float(audio_guidance_scale),
             )
             print("🎥 Generation complete!")
+            
+            # Final GPU utilization check for multi-GPU systems
+            if self.num_gpus > 1:
+                print("\n📊 Final Multi-GPU Utilization:")
+                log_multi_gpu_utilization("POST-INFERENCE", show_detailed=False)
             
         except Exception as e:
             # Provide actionable error messages for common failures
