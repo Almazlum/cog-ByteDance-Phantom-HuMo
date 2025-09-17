@@ -432,6 +432,46 @@ class Generator():
         
         return feat_merge
     
+    def forward_tia(self, latents, latents_ref, latents_ref_neg, timestep, arg_t, arg_ta, arg_null):
+        neg = self.dit(
+            [torch.cat([latent[:,:-latent_ref_neg.shape[1]], latent_ref_neg], dim=1) for latent, latent_ref_neg in zip(latents, latents_ref_neg)], t=timestep, **arg_null
+            )[0]
+        
+        pos_t = self.dit(
+            [torch.cat([latent[:,:-latent_ref_neg.shape[1]], latent_ref_neg], dim=1) for latent, latent_ref_neg in zip(latents, latents_ref_neg)], t=timestep, **arg_t
+            )[0]
+        pos_ta = self.dit(
+            [torch.cat([latent[:,:-latent_ref_neg.shape[1]], latent_ref_neg], dim=1) for latent, latent_ref_neg in zip(latents, latents_ref_neg)], t=timestep, **arg_ta
+            )[0]
+        pos_tia = self.dit(
+            [torch.cat([latent[:,:-latent_ref.shape[1]], latent_ref], dim=1) for latent, latent_ref in zip(latents, latents_ref)], t=timestep, **arg_ta
+            )[0]
+        
+        noise_pred = self.config.generation.scale_i * (pos_tia - pos_ta) + \
+                    self.config.generation.scale_a * (pos_ta - pos_t) + \
+                    self.config.generation.scale_t * (pos_t - neg) + \
+                    neg
+        
+        return noise_pred
+    
+    def forward_ta(self, latents, latents_ref_neg, timestep, arg_t, arg_ta, arg_null):
+        neg = self.dit(
+            [torch.cat([latent[:,:-latent_ref_neg.shape[1]], latent_ref_neg], dim=1) for latent, latent_ref_neg in zip(latents, latents_ref_neg)], t=timestep, **arg_null
+            )[0]
+        
+        pos_t = self.dit(
+            [torch.cat([latent[:,:-latent_ref_neg.shape[1]], latent_ref_neg], dim=1) for latent, latent_ref_neg in zip(latents, latents_ref_neg)], t=timestep, **arg_t
+            )[0]
+        pos_ta = self.dit(
+            [torch.cat([latent[:,:-latent_ref_neg.shape[1]], latent_ref_neg], dim=1) for latent, latent_ref_neg in zip(latents, latents_ref_neg)], t=timestep, **arg_ta
+            )[0]
+        
+        noise_pred = self.config.generation.scale_a * (pos_ta - pos_t) + \
+                    self.config.generation.scale_t * (pos_t - neg) + \
+                    neg
+        
+        return noise_pred
+            
                     
     @torch.no_grad()
     def inference(self,
@@ -536,9 +576,8 @@ class Generator():
             latents = noise
 
             # referene image在下面的输入中手动指定, 不在arg中指定
-            arg_at = {'context': context, 'seq_len': seq_len, 'audio': audio_emb}
+            arg_ta = {'context': context, 'seq_len': seq_len, 'audio': audio_emb}
             arg_t = {'context': context, 'seq_len': seq_len, 'audio': audio_emb_neg}
-            arg_a = {'context': context_null, 'seq_len': seq_len, 'audio': audio_emb}
             arg_null = {'context': context_null, 'seq_len': seq_len, 'audio': audio_emb_neg}
             
             torch.cuda.empty_cache()
@@ -547,26 +586,12 @@ class Generator():
                 timestep = [t]
                 timestep = torch.stack(timestep)
 
-                # self.model.to(self.device)
-                pos_ait = self.dit(
-                    [torch.cat([latent[:,:-latent_ref.shape[1]], latent_ref], dim=1) for latent, latent_ref in zip(latents, latents_ref)], t=timestep, **arg_at
-                    )[0]
-                neg = self.dit(
-                    [torch.cat([latent[:,:-latent_ref_neg.shape[1]], latent_ref_neg], dim=1) for latent, latent_ref_neg in zip(latents, latents_ref_neg)], t=timestep, **arg_null
-                    )[0]
-                
-                
-                pos_t = self.dit(
-                    [torch.cat([latent[:,:-latent_ref_neg.shape[1]], latent_ref_neg], dim=1) for latent, latent_ref_neg in zip(latents, latents_ref_neg)], t=timestep, **arg_t
-                    )[0]
-                pos_at = self.dit(
-                    [torch.cat([latent[:,:-latent_ref_neg.shape[1]], latent_ref_neg], dim=1) for latent, latent_ref_neg in zip(latents, latents_ref_neg)], t=timestep, **arg_at
-                    )[0]
-                
-                noise_pred = self.config.generation.scale_i * (pos_ait - pos_at) + \
-                            self.config.generation.scale_a * (pos_at - pos_t) + \
-                            self.config.generation.scale_t * (pos_t - neg) + \
-                            neg
+                if self.config.generation.mode == "TIA":
+                    noise_pred = self.forward_tia(latents, latents_ref, latents_ref_neg, timestep, arg_t, arg_ta, arg_null)
+                elif self.config.generation.mode == "TA":
+                    noise_pred = self.forward_ta(latents, latents_ref_neg, timestep, arg_t, arg_ta, arg_null)
+                else:
+                    raise ValueError(f"Unsupported generation mode: {self.config.generation.mode}")
 
                 temp_x0 = sample_scheduler.step(
                     noise_pred.unsqueeze(0),

@@ -1,170 +1,133 @@
-# HuMo: Human-Centric Video Generation
+<div align="center">
+<h1> HuMo: Human-Centric Video Generation via Collaborative Multi-Modal Conditioning </h1>
 
-[![arXiv](https://img.shields.io/badge/arXiv%20paper-2509.08519-b31b1b.svg)](https://arxiv.org/abs/2509.08519)&nbsp;
-[![Replicate](https://replicate.com/bytedance-research/humo/badge)](https://replicate.com/bytedance-research/humo)&nbsp;
-[![Hugging Face](https://img.shields.io/static/v1?label=🤗%20Hugging%20Face&message=Model&color=orange)](https://huggingface.co/bytedance-research/HuMo)
+<a href="https://arxiv.org/abs/2509.08519"><img src="https://img.shields.io/badge/arXiv%20paper-2509.08519-b31b1b.svg"></a>
+<a href="https://phantom-video.github.io/HuMo/"><img src="https://img.shields.io/badge/Project_page-More_visualizations-green"></a>
+<a href="https://huggingface.co/bytedance-research/HuMo"><img src="https://img.shields.io/static/v1?label=%F0%9F%A4%97%20Hugging%20Face&message=Model&color=orange"></a>
 
-> **HuMo: Human-Centric Video Generation via Collaborative Multi-Modal Conditioning**  
-> A unified framework for generating high-quality, controllable human videos from text, images, and audio.
+[Liyang Chen](https://scholar.google.com/citations?user=jk6jWXgAAAAJ&hl)<sup> * </sup>, [Tianxiang Ma](https://tianxiangma.github.io/)<sup> * </sup>, [Jiawei Liu](https://scholar.google.com/citations?user=X21Fz-EAAAAJ), [Bingchuan Li](https://scholar.google.com/citations?user=ac5Se6QAAAAJ)<sup> &dagger; </sup>, <br>[Zhuowei Chen](https://scholar.google.com/citations?user=ow1jGJkAAAAJ), [Lijie Liu](https://liulj13.github.io/), [Xu He](https://scholar.google.com/citations?user=KMrFk2MAAAAJ&hl), [Gen Li](https://scholar.google.com/citations?user=wqA7EIoAAAAJ), [Qian He](https://scholar.google.com/citations?user=9rWWCgUAAAAJ), [Zhiyong Wu](https://scholar.google.com/citations?user=7Xl6KdkAAAAJ)<sup> § </sup><br>
+<sup> * </sup>Equal contribution, <sup> &dagger; </sup>Project lead, <sup> § </sup>Corresponding author  
+Tsinghua University | Intelligent Creation Team, ByteDance
+
+</div>
 
 <p align="center">
-<img src="assets/teaser.png" width="95%">
-</p>
+<img src="assets/teaser.png" width=95%>
+<p>
+
+## 🔥 Latest News
+
+* A Best-Practice Guide for HuMo will be released soon. Stay tuned.
+* Sep 16, 2025: 🔥🔥 We release the [1.7B weights](https://huggingface.co/bytedance-research/HuMo/tree/main/HuMo-1.7B), which generate a 480P video in 8 minutes on a 32G GPU. The visual quality is lower than that of the 17B model, but the audio-visual sync remains nearly unaffected.
+* Sep 13, 2025: 🔥🔥 The 17B model is merged into [ComfyUI-Wan](https://github.com/kijai/ComfyUI-WanVideoWrapper), which can be run on a NVIDIA 3090 GPU. Thank [kijai](https://github.com/kijai) for the update!
+* Sep 10, 2025: 🔥🔥 We release the [17B weights](https://huggingface.co/bytedance-research/HuMo/tree/main/HuMo-17B) and inference codes.
+* Sep 9, 2025: We release the [Project Page](https://phantom-video.github.io/HuMo/) and [Technique Report](https://arxiv.org/abs/2509.08519/) of **HuMo**.
+
 
 ## ✨ Key Features
+HuMo is a unified, human-centric video generation framework designed to produce high-quality, fine-grained, and controllable human videos from multimodal inputs—including text, images, and audio. It supports strong text prompt following, consistent subject preservation, synchronized audio-driven motion.
 
-HuMo supports three powerful generation modes:
+> - **​​VideoGen from Text-Image**​​ - Customize character appearance, clothing, makeup, props, and scenes using text prompts combined with reference images.
+> - **​​VideoGen from Text-Audio**​​ - Generate audio-synchronized videos solely from text and audio inputs, removing the need for image references and enabling greater creative freedom.
+> - **​​VideoGen from Text-Image-Audio**​​ - Achieve the higher level of customization and control by combining text, image, and audio guidance.
 
-- **Text + Image → Video**: Generate videos with custom character appearance, clothing, and scenes
-- **Text + Audio → Video**: Create audio-synchronized videos from text descriptions and audio
-- **Text + Image + Audio → Video**: Ultimate control combining all three modalities
+## 📑 Todo List
+- [x] Release Paper
+- [x] Checkpoint of HuMo-17B
+- [x] Checkpoint of HuMo-1.7B
+- [x] Inference Codes
+  - [ ] Text-Image Input
+  - [x] Text-Audio Input
+  - [x] Text-Image-Audio Input
+- [x] Multi-GPU Inference
+- [ ] Best-Practice Guide of HuMo for Movie-Level Generation
+- [ ] Prompts to Generate Demo of ***Faceless Thrones***
+- [ ] Training Data
 
-## 🚀 Quick Start with Cog
+## ⚡️ Quickstart
 
-This repository contains a [Cog](https://cog.run) implementation of HuMo, making it easy to run locally or deploy on [Replicate](https://replicate.com).
-
-### Prerequisites
-
-- **GPU**: NVIDIA H100 (recommended) or A100 with 40GB+ VRAM
-- **Docker**: [Install Docker](https://docs.docker.com/get-docker/)
-- **Cog**: [Install Cog](https://cog.run/docs/getting-started-own-model)
-
-### Installation & Usage
-
-```bash
-# Clone the repository
-git clone https://github.com/replicate/cog-ByteDance-Phantom-HuMo
-cd cog-ByteDance-Phantom-HuMo
-
-# Run a prediction (this will automatically build the container)
-cog predict -i prompt="A person dancing to energetic music" \
-             -i audio=@examples/audio_sample.wav \
-             -i mode="text_audio"
+### Installation
+```
+conda create -n humo python=3.11
+conda activate humo
+pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu124
+pip install flash_attn==2.6.3
+pip install -r requirements.txt
+conda install -c conda-forge ffmpeg
 ```
 
-That's it! The model will automatically:
-1. Download the required weights (~104GB) from our CDN
-2. Build the Docker container 
-3. Generate your video
+### Model Preparation
+| Models       | Download Link                                                                                                                                           |    Notes                      |
+|--------------|---------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------|
+| HuMo-17B      | 🤗 [Huggingface](https://huggingface.co/bytedance-research/HuMo/tree/main/HuMo-17B)   | Supports 480P & 720P 
+| HuMo-1.7B | 🤗 [Huggingface](https://huggingface.co/bytedance-research/HuMo/tree/main/HuMo-1.7B) | Lightweight on 32G GPU
+| Wan-2.1 | 🤗 [Huggingface](https://huggingface.co/Wan-AI/Wan2.1-T2V-1.3B) | VAE & Text encoder
+| Whisper-large-v3 |      🤗 [Huggingface](https://huggingface.co/openai/whisper-large-v3)          | Audio encoder
+| Audio separator |      🤗 [Huggingface](https://huggingface.co/huangjackson/Kim_Vocal_2)          | Remove background noise (optional)
 
-### Input Parameters
-
-| Parameter | Type | Description | Default |
-|-----------|------|-------------|---------|
-| `prompt` | string | Text description of the desired video | *Required* |
-| `image` | file | Reference image for character/scene (optional) | None |
-| `audio` | file | Audio file for synchronization (optional) | None |
-| `mode` | string | Generation mode: `text_only`, `text_image`, `text_audio`, `text_image_audio` | `text_only` |
-| `frames` | integer | Number of frames to generate (1-97) | 97 |
-| `height` | integer | Video height in pixels (480 or 720) | 720 |
-| `width` | integer | Video width in pixels (832 or 1280) | 1280 |
-| `steps` | integer | Number of denoising steps (30-50) | 50 |
-| `scale_t` | float | Text guidance strength (0.0-2.0) | 1.0 |
-| `scale_a` | float | Audio guidance strength (0.0-2.0) | 1.0 |
-| `seed` | integer | Random seed for reproducible results | None |
-
-### Example Usage
-
-**Text + Audio Generation:**
-```bash
-cog predict -i prompt="A professional dancer performing contemporary dance" \
-             -i audio=@examples/dance_music.wav \
-             -i mode="text_audio" \
-             -i frames=97
+Download models using huggingface-cli:
+``` sh
+huggingface-cli download Wan-AI/Wan2.1-T2V-1.3B --local-dir ./weights/Wan2.1-T2V-1.3B
+huggingface-cli download bytedance-research/HuMo --local-dir ./weights/HuMo
+huggingface-cli download openai/whisper-large-v3 --local-dir ./weights/whisper-large-v3
+huggingface-cli download huangjackson/Kim_Vocal_2 --local-dir ./weights/audio_separator
 ```
 
-**Text + Image + Audio Generation:**
-```bash
-cog predict -i prompt="A person singing passionately on stage" \
-             -i image=@examples/reference_person.jpg \
-             -i audio=@examples/singing_audio.wav \
-             -i mode="text_image_audio"
+### Run Multimodal-Condition-to-Video Generation
+
+Our model is compatible with both 480P and 720P resolutions. 720P inference will achieve much better quality.
+> Some tips
+> - Please prepare your text, reference images and audio as described in [test_case.json](./examples/test_case.json).
+> - We support Multi-GPU inference using FSDP + Sequence Parallel.
+> - ​The model is trained on 97-frame videos at 25 FPS. Generating video longer than 97 frames may degrade the performance. We will provide a new checkpoint for longer generation.
+
+#### Configure HuMo
+
+HuMo’s behavior and output can be customized by modifying [generate.yaml](humo/configs/inference/generate.yaml) configuration file.  
+The following parameters control generation length, video resolution, and how text, image, and audio inputs are balanced:
+
+```yaml
+generation:
+  frames: <int>                 # Number of frames for the generated video.
+  scale_a: <float>              # Strength of audio guidance. Higher = better audio-motion sync.
+  scale_t: <float>              # Strength of text guidance. Higher = better adherence to text prompts.
+  mode: "TA"                    # Input mode: "TA" for text+audio; "TIA" for text+image+audio.
+  height: 720                   # Video height (e.g., 720 or 480).
+  width: 1280                   # Video width (e.g., 1280 or 832).
+
+dit:
+  sp_size: <int>                # Sequence parallelism size. Set this equal to the number of used GPUs.
+
+diffusion:
+  timesteps:
+    sampling:
+      steps: 50                 # Number of denoising steps. Lower (30–40) = faster generation.
 ```
 
-## 📁 Repository Structure
+#### 1. Text-Audio Input
 
-```
-├── predict.py          # Main Cog prediction interface
-├── cog.yaml           # Cog configuration
-├── requirements.txt   # Python dependencies
-├── humo/             # Core HuMo model code
-├── examples/         # Example inputs and test cases
-└── assets/          # Documentation assets
+``` sh
+bash scripts/infer_ta.sh  # infer with 17B model
+bash scripts/infer_ta_1_7B.sh  # infer with 1.7B model
 ```
 
-## 🔧 Development
+#### 2. Text-Image-Audio Input
 
-### Local Development Setup
-
-```bash
-# Clone and enter directory
-git clone https://github.com/replicate/cog-ByteDance-Phantom-HuMo
-cd cog-ByteDance-Phantom-HuMo
-
-# Build the container
-cog build
-
-# Run predictions
-cog predict -i prompt="Your text here" -i mode="text_only"
+``` sh
+bash scripts/infer_tia.sh  # infer with 17B model
+bash scripts/infer_tia_1_7B.sh  # infer with 1.7B model
 ```
 
-### Custom Configuration
+## Acknowledgements
+Our work builds upon and is greatly inspired by several outstanding open-source projects, including [Phantom](https://github.com/Phantom-video/Phantom), [SeedVR](https://github.com/IceClear/SeedVR?tab=readme-ov-file), [MEMO](https://github.com/memoavatar/memo), [Hallo3](https://github.com/fudan-generative-vision/hallo3), [OpenHumanVid](https://github.com/fudan-generative-vision/OpenHumanVid), [OpenS2V-Nexus](https://github.com/PKU-YuanGroup/OpenS2V-Nexus), [ConsisID](https://github.com/PKU-YuanGroup/ConsisID) and [Whisper](https://github.com/openai/whisper). We sincerely thank the authors and contributors of these projects for generously sharing their excellent codes and ideas.
 
-The model behavior can be fine-tuned by modifying the generation parameters:
+## ⭐ Citation
 
-- **Higher `steps`** (40-50): Better quality, slower generation
-- **Higher `scale_t`**: Stronger text adherence
-- **Higher `scale_a`**: Better audio synchronization
-- **720p resolution**: Best quality (requires more VRAM)
-- **480p resolution**: Faster generation
+If HuMo is helpful, please help to ⭐ the repo.
 
-## 🎯 Use Cases
+If you find this project useful for your research, please consider citing our [paper](https://arxiv.org/abs/2509.08519).
 
-**Content Creation:**
-- Music videos and dance content
-- Character-based storytelling
-- Audio-visual presentations
-
-**Entertainment:**
-- Interactive avatar generation
-- Video game character animation
-- Film and media production
-
-**Research & Education:**
-- Human motion studies
-- Audio-visual synchronization research
-- Multimodal AI demonstrations
-
-## ⚡ Performance
-
-- **Generation Time**: ~2-5 minutes for 97 frames (4 seconds) on H100
-- **Memory Requirements**: 40GB+ VRAM recommended
-- **Resolution Support**: 480p, 720p
-- **Frame Rate**: 25 FPS output
-
-## 📝 Technical Details
-
-HuMo is built on a 17B parameter transformer architecture with:
-- **Multi-modal conditioning** for text, image, and audio inputs
-- **Temporal consistency** across 97-frame sequences
-- **High-fidelity synthesis** at up to 720p resolution
-- **Efficient caching system** for fast model loading
-
-## 🤝 Contributing
-
-We welcome contributions! Please:
-1. Fork the repository
-2. Create a feature branch
-3. Submit a pull request
-
-## 📜 License
-
-This project is licensed under the Apache License 2.0. See [LICENSE](LICENSE) for details.
-
-## 📚 Citation
-
-If you use HuMo in your research, please cite:
-
+### BibTeX
 ```bibtex
 @misc{chen2025humo,
       title={HuMo: Human-Centric Video Generation via Collaborative Multi-Modal Conditioning}, 
@@ -172,17 +135,10 @@ If you use HuMo in your research, please cite:
       year={2025},
       eprint={2509.08519},
       archivePrefix={arXiv},
-      primaryClass={cs.CV}
+      primaryClass={cs.CV},
+      url={https://arxiv.org/abs/2509.08519}, 
 }
 ```
 
-## 🔗 Links
-
-- **Paper**: [arXiv:2509.08519](https://arxiv.org/abs/2509.08519)
-- **Project Page**: [phantom-video.github.io/HuMo](https://phantom-video.github.io/HuMo/)
-- **Original Repository**: [ByteDance Research](https://huggingface.co/bytedance-research/HuMo)
-- **Replicate Demo**: [replicate.com/bytedance-research/humo](https://replicate.com/bytedance-research/humo)
-
----
-
-For questions or support, please open an issue or visit our [project page](https://phantom-video.github.io/HuMo/).
+## 📧 Contact
+If you have any comments or questions regarding this open-source project, please open a new issue or contact [Liyang Chen](https://leoniuschen.github.io/) and [Tianxiang Ma](https://tianxiangma.github.io/).

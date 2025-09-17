@@ -1,11 +1,37 @@
-build:
-  gpu: true
-  cuda: "12.4"
-  system_packages:
-    - "ffmpeg"
-    - "git" 
-    - "wget"
-  python_version: "3.11"
-  python_requirements: "requirements.txt"
+# HuMo: Human-Centric Video Generation
+# Paper: https://arxiv.org/abs/2509.08519
+# Project: https://phantom-video.github.io/HuMo/
 
+build:
+  # High-end GPU required (H200 recommended for optimal performance)
+  gpu: true
+
+  # System dependencies for multimedia processing
+  system_packages:
+    - "libgl1-mesa-glx"      # OpenGL for video rendering
+    - "libglib2.0-0"         # System utilities  
+    - "ffmpeg"               # Video/audio codec support
+    - "libsndfile1"          # Audio file format support
+
+  # Python 3.11 for stable PyTorch ecosystem
+  python_version: "3.11"
+
+  # Python package dependencies
+  python_requirements: requirements.txt
+
+  # Environment setup commands
+  run:
+    # Fast model weight downloads
+    - curl -o /usr/local/bin/pget -L "https://github.com/replicate/pget/releases/latest/download/pget_$(uname -s)_$(uname -m)"
+    - chmod +x /usr/local/bin/pget
+    # Optimize GPU memory allocation for large models
+    - echo 'export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True' >> /root/.bashrc
+    # Install huggingface-cli for model downloads
+    - pip install --upgrade huggingface_hub[cli]
+    # Step 1: Install build-time dependencies
+    - pip install torch ninja packaging
+    # Step 2: Install flash-attn with the flag
+    - pip install flash-attn --no-build-isolation
+
+# Entry point for predictions
 predict: "predict.py:Predictor"

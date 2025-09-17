@@ -57,6 +57,7 @@ from humo.models.utils.utils import tensor_to_video, prepare_json_dataset
 from contextlib import contextmanager
 import torch.cuda.amp as amp
 from humo.models.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
+from humo.utils.audio_processor_whisper import AudioProcessor
 from humo.utils.wav2vec import linear_interpolation_fps
 
 
@@ -102,6 +103,15 @@ class Generator():
         self.logger = get_logger(self.__class__.__name__)
         
         init_torch(cudnn_benchmark=False)
+
+    def maybe_empty_cache(self):
+        """Conditionally free CUDA cache if HUMO_EMPTY_CACHE=1.
+        
+        Frequent empty_cache() can slow inference by ~10-20% due to
+        allocator overhead. Keep opt-in for memory-constrained runs.
+        """
+        if os.environ.get("HUMO_EMPTY_CACHE", "0") == "1":
+            torch.cuda.empty_cache()
 
     def entrypoint(self):
         self.configure_models()
@@ -193,7 +203,6 @@ class Generator():
             raise ValueError(f"Unsupported height {self.config.generation.height} for zero-vae.")
     
     def configure_wav2vec(self, device=get_device()):
-        from humo.utils.audio_processor_whisper import AudioProcessor
         audio_separator_model_file = self.config.audio.vocal_separator
         wav2vec_model_path = self.config.audio.wav2vec_model
 
@@ -219,9 +228,21 @@ class Generator():
 
     
     def configure_dit_fsdp_model(self):
+        """Configure DiT model with FSDP for multi-GPU or direct placement for single-GPU.
+        
+        FSDP wrapping on single GPU can cause OOMs during setup due to
+        sync overhead. Skip FSDP when world_size=1 or explicitly disabled.
+        """
         from humo.models.wan_modules.model_humo import WanAttentionBlock
 
         dit_blocks = (WanAttentionBlock,)
+
+        # Respect FSDP enabled flag; default to enabling only when multi-GPU
+        fsdp_enabled = getattr(self.config.dit.fsdp, 'enabled', None)
+        if fsdp_enabled is False or (fsdp_enabled is None and torch.cuda.device_count() <= 1):
+            # Keep model on device without FSDP wrapping
+            self.dit.to(get_device())
+            return
 
         # Init model_shard_cpu_group for saving checkpoint with sharded state_dict.
         init_model_shard_cpu_group(
@@ -437,55 +458,63 @@ class Generator():
         mask = None
         return latent, mask
     
-    def forward_tia(self, latents, timestep, t, step_change, arg_tia, arg_ti, arg_i, arg_null):
+    def forward_tia(self, latents, timestep, t, step_change, arg_tia, arg_ti, arg_i, arg_null, scale_t=None, scale_a=None):
+        # Use override scales if provided, otherwise fall back to config
+        scale_t = scale_t if scale_t is not None else self.config.generation.scale_t
+        scale_a = scale_a if scale_a is not None else self.config.generation.scale_a
+        
         pos_tia, _ = self.parse_output(self.dit(
             latents, t=timestep, **arg_tia
             ))
-        torch.cuda.empty_cache()
+        self.maybe_empty_cache()
 
         pos_ti, _ = self.parse_output(self.dit(
             latents, t=timestep, **arg_ti
             ))
-        torch.cuda.empty_cache()
+        self.maybe_empty_cache()
 
         if t > step_change:
             neg, _ = self.parse_output(self.dit(
                 latents, t=timestep, **arg_i
                 ))  # img included in null, same with official Wan-2.1
-            torch.cuda.empty_cache()
+            self.maybe_empty_cache()
 
-            noise_pred = self.config.generation.scale_a * (pos_tia - pos_ti) + \
-                    self.config.generation.scale_t * (pos_ti - neg) + \
+            noise_pred = scale_a * (pos_tia - pos_ti) + \
+                    scale_t * (pos_ti - neg) + \
                     neg
         else:
             neg, _ = self.parse_output(self.dit(
                 latents, t=timestep, **arg_null
                 ))  # img not included in null
-            torch.cuda.empty_cache()
+            self.maybe_empty_cache()
 
-            noise_pred = self.config.generation.scale_a * (pos_tia - pos_ti) + \
-                    (self.config.generation.scale_t - 2.0) * (pos_ti - neg) + \
+            noise_pred = scale_a * (pos_tia - pos_ti) + \
+                    (scale_t - 2.0) * (pos_ti - neg) + \
                     neg
         return noise_pred
     
-    def forward_ta(self, latents, timestep, arg_ta, arg_t, arg_null):
+    def forward_ta(self, latents, timestep, arg_ta, arg_t, arg_null, scale_t=None, scale_a=None):
+        # Use override scales if provided, otherwise fall back to config
+        scale_t = scale_t if scale_t is not None else self.config.generation.scale_t
+        scale_a = scale_a if scale_a is not None else self.config.generation.scale_a
+        
         pos_ta, _ = self.parse_output(self.dit(
             latents, t=timestep, **arg_ta
             ))
-        torch.cuda.empty_cache()
+        self.maybe_empty_cache()
 
         pos_t, _ = self.parse_output(self.dit(
             latents, t=timestep, **arg_t
             ))
-        torch.cuda.empty_cache()
+        self.maybe_empty_cache()
 
         neg, _ = self.parse_output(self.dit(
                 latents, t=timestep, **arg_null
                 ))
-        torch.cuda.empty_cache()
+        self.maybe_empty_cache()
             
-        noise_pred = self.config.generation.scale_a * (pos_ta - pos_t) + \
-                self.config.generation.scale_t * (pos_t - neg) + \
+        noise_pred = scale_a * (pos_ta - pos_t) + \
+                scale_t * (pos_t - neg) + \
                 neg
         return noise_pred
                     
@@ -502,8 +531,20 @@ class Generator():
                  n_prompt="",
                  seed=-1,
                  offload_model=True,
+                 mode_override=None,
+                 scale_t_override=None,
+                 scale_a_override=None,
                  device = get_device(),
         ):
+        """Core inference method: text + optional image/audio → video tensor.
+        
+        Args:
+            mode_override: Force generation mode ('TA' or 'TIA'). If None, uses config.
+            offload_model: Move models to CPU between stages to save VRAM.
+        
+        Returns:
+            torch.Tensor: Video in [C, F, H, W] format (caller must transpose for writing).
+        """
 
         self.vae.model.to(device=device)
         if img_path is not None:
@@ -511,7 +552,8 @@ class Generator():
         else:
             latents_ref = [torch.zeros(16, 1, size[1]//8, size[0]//8).to(device)]
             
-        self.vae.model.to(device="cpu")
+        if offload_model:
+            self.vae.model.to(device="cpu")
         latents_ref_neg = [torch.zeros_like(latent_ref) for latent_ref in latents_ref]
         
         # audio
@@ -519,7 +561,8 @@ class Generator():
             if self.config.generation.extract_audio_feat:
                 self.audio_processor.whisper.to(device=device)
                 audio_emb, audio_length = self.audio_processor.preprocess(audio_path)
-                self.audio_processor.whisper.to(device='cpu')
+                if offload_model:
+                    self.audio_processor.whisper.to(device='cpu')
             else:
                 audio_emb_path = audio_path.replace(".wav", ".pt")
                 audio_emb = torch.load(audio_emb_path).to(device=device)
@@ -556,7 +599,8 @@ class Generator():
         self.text_encoder.model.to(device)
         context = self.text_encoder([input_prompt], device)
         context_null = self.text_encoder([n_prompt], device)
-        self.text_encoder.model.cpu()
+        if offload_model:
+            self.text_encoder.model.cpu()
 
         noise = [
             torch.randn(
@@ -577,7 +621,7 @@ class Generator():
         step_change = self.config.generation.step_change # 980
 
         # evaluation mode
-        with amp.autocast(dtype=torch.bfloat16), torch.no_grad(), no_sync():
+        with torch.amp.autocast('cuda', dtype=torch.bfloat16), torch.inference_mode(), no_sync():
 
             if sample_solver == 'unipc':
                 sample_scheduler = FlowUniPCMultistepScheduler(
@@ -613,19 +657,22 @@ class Generator():
             arg_ta = {'seq_len': seq_len, 'audio': audio_emb, 'y': y_null, 'context': context}
             arg_tia = {'seq_len': seq_len, 'audio': audio_emb, 'y': y_c, 'context': context}
             
-            torch.cuda.empty_cache()
+            self.maybe_empty_cache()
             self.dit.to(device=get_device())
-            for _, t in enumerate(tqdm(timesteps)):
-                timestep = [t]
-                timestep = torch.stack(timestep)
+            # Minimal overhead progress output for speed; fallback if tqdm unavailable
+            for _, t in enumerate(timesteps):
+                timestep = t.unsqueeze(0)
 
-                if self.config.generation.mode == "TIA":
+                mode_to_use = mode_override if mode_override is not None else self.config.generation.mode
+                if mode_to_use == "TIA":
                     noise_pred = self.forward_tia(latents, timestep, t, step_change, 
-                                                  arg_tia, arg_ti, arg_i, arg_null)
-                elif self.config.generation.mode == "TA":
-                    noise_pred = self.forward_ta(latents, timestep, arg_ta, arg_t, arg_null)
+                                                  arg_tia, arg_ti, arg_i, arg_null,
+                                                  scale_t=scale_t_override, scale_a=scale_a_override)
+                elif mode_to_use == "TA":
+                    noise_pred = self.forward_ta(latents, timestep, arg_ta, arg_t, arg_null,
+                                                scale_t=scale_t_override, scale_a=scale_a_override)
                 else:
-                    raise ValueError(f"Unsupported generation mode: {self.config.generation.mode}")
+                    raise ValueError(f"Unsupported generation mode: {mode_to_use}")
 
                 temp_x0 = sample_scheduler.step(
                     noise_pred.unsqueeze(0),
@@ -636,27 +683,28 @@ class Generator():
                 latents = [temp_x0.squeeze(0)]
 
                 del timestep
-                torch.cuda.empty_cache()
+                self.maybe_empty_cache()
 
             x0 = latents
             x0 = [x0_[:,:-latents_ref[0].shape[1]] for x0_ in x0]
 
-            # if offload_model:
-            self.dit.cpu()
-            torch.cuda.empty_cache()
+            if offload_model:
+                self.dit.cpu()
+            self.maybe_empty_cache()
             # if get_local_rank() == 0:
             self.vae.model.to(device=device)
             videos = self.vae.decode(x0)
-            self.vae.model.to(device="cpu")
+            if offload_model:
+                self.vae.model.to(device="cpu")
 
         del noise, latents, noise_pred
         del audio_emb, audio_emb_neg, latents_ref, latents_ref_neg, context, context_null
         del x0, temp_x0
         del sample_scheduler
-        torch.cuda.empty_cache()
+        self.maybe_empty_cache()
         gc.collect()
         torch.cuda.synchronize()
-        if dist.is_initialized():
+        if dist.is_initialized() and dist.get_world_size() > 1:
             dist.barrier()
 
         return videos[0] # if get_local_rank() == 0 else None

@@ -16,6 +16,7 @@ dit:
   init_with_meta_device: True
   gradient_checkpoint: True
   fsdp:
+    enabled: True
     sharding_strategy: _HYBRID_SHARD_ZERO2
   sp_size: 8
 

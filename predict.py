@@ -1,51 +1,33 @@
-"""
-HuMo: Human-Centric Video Generation via Collaborative Multi-Modal Conditioning
-Cog implementation for Replicate deployment
-"""
-
 import os
-import sys
-import gc
-import subprocess
-import time
-import json
-import wave
-
-def make_silent_wav(path: str, duration_s: float = 4.0, sample_rate: int = 16000):
-    nframes = int(duration_s * sample_rate)
-    with wave.open(path, "w") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)  # 16-bit PCM
-        wf.setframerate(sample_rate)
-        wf.writeframes(b"\x00\x00" * nframes)
 import tempfile
-from pathlib import Path
+import torch
+import random
+import subprocess
+import numpy as np
+import time
 from typing import Optional
 
-# GPU optimizations
-os.environ.update({
-    "CUDA_LAUNCH_BLOCKING": "0",
-    "TORCH_BACKENDS_CUDNN_BENCHMARK": "1",
-    "PYTORCH_CUDA_ALLOC_CONF": "max_split_size_mb:128",
-    "OMP_NUM_THREADS": "8",
-    "MKL_NUM_THREADS": "8",
-    "TOKENIZERS_PARALLELISM": "false"
-})
+from cog import BasePredictor, Input, Path as CPath
+from pathlib import Path
+from omegaconf import OmegaConf
+from humo.generate import Generator
+from common.config import load_config
 
-# Model cache configuration
-MODEL_CACHE = "weights"
-BASE_URL = "https://weights.replicate.delivery/default/HuMo/weights/"
 
-# Set environment variables for model caching
-os.environ.update({
-    "HF_HOME": MODEL_CACHE,
-    "TORCH_HOME": MODEL_CACHE,
-    "HF_DATASETS_CACHE": MODEL_CACHE,
-    "TRANSFORMERS_CACHE": MODEL_CACHE,
-    "HUGGINGFACE_HUB_CACHE": MODEL_CACHE
-})
+# Weight download configuration
+WEIGHTS_DIR = "weights"  # Relative to /src in container
+WEIGHTS_BASE_URL = "https://weights.replicate.delivery/default/HuMo/weights/"
 
-def download_weights(url: str, dest: str) -> None:
+# Set environment variables for model caching - needs to happen early
+os.environ["HF_HOME"] = WEIGHTS_DIR
+os.environ["TORCH_HOME"] = WEIGHTS_DIR  
+os.environ["HF_DATASETS_CACHE"] = WEIGHTS_DIR
+os.environ["TRANSFORMERS_CACHE"] = WEIGHTS_DIR
+os.environ["HUGGINGFACE_HUB_CACHE"] = WEIGHTS_DIR
+# Recommended for Hopper to improve kernel scheduling
+os.environ.setdefault("CUDA_DEVICE_MAX_CONNECTIONS", "1")
+
+def download_weights_fast(url: str, dest: str) -> None:
     """Download model weights using pget with parallel downloads"""
     start = time.time()
     print(f"[!] Downloading from: {url}")
@@ -64,212 +46,340 @@ def download_weights(url: str, dest: str) -> None:
         print(f"[ERROR] Download failed: {e}")
         raise
 
-def ensure_model_weights():
-    """Download and extract all required model weights"""
-    models_to_download = [
-        ("HuMo.tar", "HuMo"),
-        ("Wan2.1-T2V-1.3B.tar", "Wan2.1-T2V-1.3B"),
-        ("whisper-large-v3.tar", "whisper-large-v3"),
-        ("audio_separator.tar", "audio_separator")
+def download_weights_fallback(repo: str, dest: str, desc: str) -> None:
+    """Fallback to Hugging Face download if CDN fails"""
+    print(f"📦 Fallback: Downloading {desc} from Hugging Face...")
+    os.makedirs(dest, exist_ok=True)
+    subprocess.run([
+        "huggingface-cli", "download", repo, "--local-dir", dest, "--quiet"
+    ], check=True, timeout=3600)
+    print(f"✅ {desc} ready via Hugging Face")
+
+def download_weights():
+    """Download all required model weights for HuMo-17B.
+    
+    Uses fast CDN download via pget, falls back to Hugging Face if CDN fails.
+    Weights are cached in WEIGHTS_DIR to avoid re-downloading on container restart.
+    """
+    os.makedirs(WEIGHTS_DIR, exist_ok=True)
+    
+    # Model weight tar files uploaded to CDN
+    model_files = [
+        "HuMo.tar",
+        "Wan2.1-T2V-1.3B.tar", 
+        "whisper-large-v3.tar",
+        "audio_separator.tar"
     ]
     
-    for tar_name, extracted_name in models_to_download:
-        target_path = Path(MODEL_CACHE) / extracted_name
-        if not target_path.exists():
-            print(f"[!] {extracted_name} not found, downloading...")
-            download_weights(f"{BASE_URL}{tar_name}", str(target_path))
+    # HF fallback repositories
+    fallback_repos = {
+        "HuMo.tar": ("bytedance-research/HuMo", "HuMo-17B model weights"),
+        "Wan2.1-T2V-1.3B.tar": ("Wan-AI/Wan2.1-T2V-1.3B", "VAE and text encoder"),
+        "whisper-large-v3.tar": ("openai/whisper-large-v3", "Audio encoder"),
+        "audio_separator.tar": ("huangjackson/Kim_Vocal_2", "Audio separator")
+    }
+    
+    for model_file in model_files:
+        url = WEIGHTS_BASE_URL + model_file
+        filename = url.split("/")[-1]
+        dest_path = os.path.join(WEIGHTS_DIR, filename)
+        extracted_dir = dest_path.replace(".tar", "")
+        
+        # Check if already extracted
+        if not os.path.exists(extracted_dir):
+            try:
+                # Try fast CDN download first
+                hf_repo, desc = fallback_repos[model_file]
+                print(f"🚀 Fast download: {desc}...")
+                download_weights_fast(url, dest_path)
+                print(f"✅ {desc} ready via CDN")
+            except Exception as e:
+                print(f"⚠️  CDN download failed: {e}")
+                # Fallback to Hugging Face
+                hf_repo, desc = fallback_repos[model_file]
+                download_weights_fallback(hf_repo, extracted_dir, desc)
         else:
-            print(f"[✓] {extracted_name} already exists")
+            _, desc = fallback_repos[model_file]
+            print(f"✅ {desc} ready")
 
-# Import after environment setup
-import torch
-import numpy as np
-from cog import BasePredictor, Input, Path as CogPath
+
+def setup_gpu_environment():
+    """Detect GPU count and configure environment for optimal performance.
+    
+    Returns:
+        tuple: (num_gpus, sp_size) for config selection
+    """
+    if not torch.cuda.is_available():
+        raise RuntimeError("No CUDA GPUs detected. HuMo requires GPU acceleration.")
+        
+    num_gpus = torch.cuda.device_count()
+    gpu_names = [torch.cuda.get_device_name(i) for i in range(num_gpus)]
+    
+    print(f"🔍 Detected {num_gpus} GPU(s): {gpu_names}")
+    
+    # Configure environment for optimal performance
+    if num_gpus >= 4:
+        # High-end multi-GPU setup
+        gpu_ids = ','.join(str(i) for i in range(num_gpus))
+        sp_size = min(num_gpus, 8)
+        print(f"🚀 High-performance setup: {num_gpus} GPUs with sequence parallel")
+    elif num_gpus >= 2:
+        # Medium multi-GPU setup
+        gpu_ids = ','.join(str(i) for i in range(num_gpus))
+        sp_size = num_gpus
+        print(f"⚡ Multi-GPU setup: {num_gpus} GPUs")
+    else:
+        # Single GPU setup
+        gpu_ids = '0'
+        sp_size = 1
+        print(f"⚡ Single GPU setup: {gpu_names[0]}")
+    
+    # Set environment variables
+    os.environ.update({
+        'CUDA_VISIBLE_DEVICES': gpu_ids,
+        'MASTER_ADDR': 'localhost',
+        'MASTER_PORT': '12355',
+        'RANK': '0',
+        'WORLD_SIZE': str(num_gpus),
+        'LOCAL_RANK': '0',
+        'PYTORCH_CUDA_ALLOC_CONF': 'expandable_segments:True'
+    })
+    
+    return num_gpus, sp_size
+
 
 class Predictor(BasePredictor):
     def setup(self) -> None:
-        """Load the model into memory to make running multiple predictions efficient"""
-        print("[!] Starting HuMo model setup...")
+        """One-time model setup.
+
+        - Detects GPUs and configures distributed/env variables
+        - Downloads weights (CDN fast-path, HF fallback)
+        - Loads single- vs multi-GPU config, builds generator
+        - Enables fast matmul/attention backends on Hopper
+        - Performs a tiny warmup so first predict() is fast
+        """
+        print("🚀 Setting up HuMo-17B...")
         
-        # Ensure all model weights are available
-        ensure_model_weights()
+        # Configure GPU environment
+        num_gpus, sp_size = setup_gpu_environment()
+        torch.backends.cudnn.benchmark = True
+        # Performance knobs: enable TF32 and fused SDP kernels when available
+        if hasattr(torch.backends, 'cuda') and hasattr(torch.backends.cuda, 'matmul'):
+            torch.backends.cuda.matmul.allow_tf32 = True
+        if hasattr(torch.backends, 'cudnn') and hasattr(torch.backends.cudnn, 'allow_tf32'):
+            torch.backends.cudnn.allow_tf32 = True
+        # Prefer Flash and Mem-Efficient SDP kernels on Hopper
+        if hasattr(torch.backends.cuda, 'enable_flash_sdp'):
+            torch.backends.cuda.enable_flash_sdp(True)
+        if hasattr(torch.backends.cuda, 'enable_mem_efficient_sdp'):
+            torch.backends.cuda.enable_mem_efficient_sdp(True)
+        if hasattr(torch.backends.cuda, 'enable_math_sdp'):
+            torch.backends.cuda.enable_math_sdp(False)
+        if hasattr(torch, 'set_float32_matmul_precision'):
+            torch.set_float32_matmul_precision("high")
+        # Silence tokenizers fork warning to avoid overhead
+        os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
         
-        # Add project and humo folders to Python path
-        sys.path.insert(0, str(Path.cwd()))
-        sys.path.insert(0, str(Path.cwd() / 'humo'))
-        os.environ['PYTHONPATH'] = str(Path.cwd() / 'humo') + os.pathsep + os.environ.get('PYTHONPATH', '')
+        # Download weights
+        download_weights()
         
-        print("[!] Importing HuMo modules...")
-        # Ensure torch.distributed can init in single-GPU mode
-        os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
-        os.environ.setdefault("MASTER_PORT", "29500")
-        os.environ.setdefault("RANK", "0")
-        os.environ.setdefault("WORLD_SIZE", "1")
-        from humo.common.config import load_config
-        from humo.generate import Generator
+        # Load appropriate config based on GPU setup
+        if num_gpus > 1:
+            config = load_config("humo/configs/inference/generate.yaml")
+            config.dit.sp_size = sp_size
+            config.dit.fsdp.enabled = True
+            print(f"📊 Multi-GPU config: sp_size={sp_size}")
+        else:
+            config = load_config("humo/configs/inference/generate_single_gpu.yaml")
+            print("📊 Single GPU config")
         
-        # Load configuration
-        config_path = "humo/configs/inference/generate_single_gpu.yaml"
-        self.config = load_config(config_path)
+        # Initialize generator
+        self.generator = Generator(config)
+        self.generator.configure_models()
         
-        # Initialize HuMo Generator
-        print("[!] Initializing HuMo generator...")
-        self.generator = Generator(self.config)
-        
-        print("[✓] HuMo setup complete!")
+        print(f"✅ HuMo-17B ready on {num_gpus} GPU(s)")
+
+        # Optional warmup to prime kernels and caches (setup can take longer; predict should be fast)
+        try:
+            print("🔥 Warming up kernels (2 steps, 1 frame)...")
+            _ = self.generator.inference(
+                input_prompt="warmup",
+                img_path=None,
+                audio_path=None,
+                size=(1280, 720),
+                frame_num=1,
+                sampling_steps=2,
+                shift=1.0,
+                n_prompt="",
+                seed=123,
+                offload_model=False,
+            )
+            print("🔥 Warmup complete")
+        except Exception as e:
+            print(f"⚠️  Warmup skipped: {e}")
 
     def predict(
         self,
         prompt: str = Input(
-            description="Text description of the desired video",
-            default="A person dancing to energetic music"
+            description="Text description of the video. Be detailed about the person, actions, and scene.",
+            default="A person walking confidently down a busy street"
         ),
-        image: CogPath = Input(
-            description="Optional reference image for character/scene (for text+image or text+image+audio modes)",
-            default=None
+        reference_image: Optional[CPath] = Input(
+            description="Reference image to control the person's appearance (optional)",
+            default=None,
         ),
-        audio: CogPath = Input(
-            description="Optional audio file for synchronization (for text+audio or text+image+audio modes)", 
-            default=None
-        ),
-        mode: str = Input(
-            description="Generation mode based on available inputs",
-            choices=["text_only", "text_image", "text_audio", "text_image_audio"],
-            default="text_only"
-        ),
-        frames: int = Input(
-            description="Number of frames to generate (HuMo is trained on 97-frame sequences)",
-            default=97,
-            ge=1,
-            le=97
-        ),
-        height: int = Input(
-            description="Video height in pixels",
-            choices=[480, 720],
-            default=720
+        audio: Optional[CPath] = Input(
+            description="Audio file for lip-sync and movement synchronization (optional)",
+            default=None,
         ),
         width: int = Input(
-            description="Video width in pixels (recommended: 832 for 480p, 1280 for 720p)",
-            choices=[832, 1280],
-            default=1280
+            description="Video width in pixels",
+            default=1280,
+            choices=[1280]  # 720p only for now (480p has zero_vae compatibility issues)
         ),
-        steps: int = Input(
-            description="Number of denoising steps (higher = better quality, slower generation)",
-            default=50,
-            ge=30,
-            le=50
+        height: int = Input(
+            description="Video height in pixels", 
+            default=720,
+            choices=[720]  # 720p only for now (480p has zero_vae compatibility issues)
         ),
-        scale_t: float = Input(
-            description="Text guidance strength (higher = better text adherence)",
-            default=1.0,
-            ge=0.0,
-            le=2.0
+        num_frames: int = Input(
+            description="Number of frames (25 fps, so 25 frames = 1 second). Model trained on up to 97 frames.",
+            default=49,
+            ge=9,  # Minimum for meaningful motion (increased from 1)
+            le=97  # Model's training limit
         ),
-        scale_a: float = Input(
-            description="Audio guidance strength (higher = better audio synchronization)",
-            default=1.0,
-            ge=0.0,
-            le=2.0
+        num_inference_steps: int = Input(
+            description="Denoising steps. More steps = higher quality but slower. Research default is 50.",
+            default=50,  # Match research default for quality
+            ge=10,  # Minimum for decent quality (increased from 5)
+            le=100
         ),
-        seed: int = Input(
-            description="Random seed for reproducible results. Use -1 for random seed",
-            default=-1
-        )
-    ) -> CogPath:
-        """Generate human-centric video using HuMo"""
+        guidance_scale: float = Input(
+            description="Text guidance strength. Research default is 5.0. Lower values (3-5) often produce more natural lighting.",
+            default=5.0,  # Match research default
+            ge=2.0,  # Minimum for meaningful guidance (increased from 1.0)
+            le=15.0  # Reduced max to prevent over-guidance
+        ),
+        audio_guidance_scale: float = Input(
+            description="Audio guidance strength (when audio provided). Higher = better sync. Research default is 5.5.",
+            default=5.5,  # Match research default
+            ge=2.0,  # Minimum for meaningful guidance
+            le=15.0  # Reduced max to prevent over-guidance
+        ),
+        seed: Optional[int] = Input(
+            description="Random seed for reproducible generation",
+            default=None,
+            ge=0,
+            le=2147483647
+        ),
+        negative_prompt: str = Input(
+            description="What to avoid in the video",
+            default="blurry, low quality, distorted, bad anatomy"  # Simplified, avoid anti-lighting terms
+        ),
+    ) -> CPath:
+        """Generate a video from text (+ optional image/audio).
+
+        Defaults target the model's trained resolution and frame budget.
+        API users can override frames/steps/guidance while keeping sensible behavior.
+        """
+        # Validate inputs
+        if not prompt.strip() or len(prompt.strip()) < 10:
+            raise ValueError("Prompt must be at least 10 characters")
         
-        if seed == -1:
-            seed = int(time.time())
+        # Resolution validation (720p only for stable operation)
+        if width != 1280 or height != 720:
+            raise ValueError(f"Invalid resolution {width}x{height}. Only 1280x720 (720p) is currently supported.")
         
-        # Set random seeds
-        torch.manual_seed(seed)
-        np.random.seed(seed)
+        # Set random seed
+        if seed is None:
+            seed = random.randint(0, 100000)
         
-        print(f"[!] Generating video with mode: {mode}")
-        print(f"[~] Resolution: {width}x{height}, Frames: {frames}, Steps: {steps}")
-        print(f"[~] Text guidance: {scale_t}, Audio guidance: {scale_a}")
-        print(f"[~] Seed: {seed}")
+        # Determine mode
+        mode = "T"
+        if reference_image:
+            mode += "I"
+        if audio:
+            mode += "A"
+
+        # Map user-facing mode to generator modes (TA or TIA only)
+        if audio:
+            generator_mode = "TIA" if reference_image else "TA"
+        else:
+            generator_mode = "TA"  # Text-only runs via TA path with zeroed audio
         
+        # Log generation details
+        duration = num_frames / 25.0
+        print(f"🎬 Generating {duration:.1f}s video ({width}x{height}, {num_frames} frames)")
+        print(f"📝 Mode: {mode} (engine={generator_mode}) | Steps: {num_inference_steps} | Seed: {seed}")
+
+        # Early validation: check file paths before expensive GPU operations
+        if reference_image is not None:
+            ref_path = str(reference_image)
+            if not os.path.isfile(ref_path):
+                raise ValueError(f"Reference image not found: {ref_path}")
+        if audio is not None:
+            aud_path = str(audio)
+            if not os.path.isfile(aud_path):
+                raise ValueError(f"Audio file not found: {aud_path}")
+        
+        # Pass guidance scales as parameters (config is read-only)
+
+        # Generate video using the configured model
         try:
-            # Normalize to backend-supported modes (TA, TIA)
-            MODE_MAP = {
-                "text_only": "TA",
-                "text_audio": "TA",
-                "text_image": "TIA",
-                "text_image_audio": "TIA",
-            }
-            backend_mode = MODE_MAP.get(mode, "TA")
-            # Validate inputs based on mode
-            if mode in ["text_image", "text_image_audio"] and image is None:
-                raise ValueError(f"Mode '{mode}' requires an input image")
-            
-            if mode in ["text_audio", "text_image_audio"] and audio is None:
-                raise ValueError(f"Mode '{mode}' requires an input audio file")
-            
-            # Update config with user parameters
-            # Ensure audio exists for backend modes that require it
-            temp_dir = Path(tempfile.mkdtemp())
-            if backend_mode in ("TA", "TIA") and (audio is None):
-                silent_wav_path = temp_dir / "silent.wav"
-                make_silent_wav(str(silent_wav_path), duration_s=max(frames/25.0, 4.0))
-                audio = CogPath(str(silent_wav_path))
-            self.config.generation.frames = frames
-            self.config.generation.height = height  
-            self.config.generation.width = width
-            self.config.generation.scale_t = scale_t
-            self.config.generation.scale_a = scale_a
-            self.config.diffusion.timesteps.sampling.steps = steps
-            # Toggle audio feature extraction depending on mode
-            if hasattr(self.config.generation, "extract_audio_feat"):
-                self.config.generation.extract_audio_feat = (backend_mode in ("TA","TIA"))
-            
-            # Set mode based on inputs
-            self.config.generation.mode = backend_mode
-            
-            # Create temporary test case
-            temp_dir = Path(tempfile.mkdtemp())
-            test_case = {
-                "case_1": {
-                    "prompt": prompt,
-                    "img_paths": [str(image)] if (backend_mode=="TIA" and image) else [],
-                    "audio_path": str(audio) if backend_mode in ("TA","TIA") else ""
-                }
-            }
-            
-            test_case_path = temp_dir / "test_case.json"
-            with open(test_case_path, "w") as f:
-                json.dump(test_case, f, indent=2)
-            
-            # Update config paths
-            self.config.generation.test_case_path = str(test_case_path)
-            self.config.generation.case_name = "case_1"
-            self.config.generation.output_dir = str(temp_dir)
-            
-            print("[!] Starting video generation...")
-            generation_start = time.time()
-            
-            # Use HuMo Generator entrypoint
-            output_path = self.generator.entrypoint()
-            
-            generation_time = time.time() - generation_start
-            print(f"[✓] Video generation completed in {generation_time:.1f}s")
-            
-            # Verify output file exists
-            if not Path(output_path).exists():
-                raise RuntimeError(f"Generated video not found at {output_path}")
-            
-            print(f"[✓] Video saved to {output_path}")
-            
-            # Clean up GPU memory
-            torch.cuda.empty_cache()
-            gc.collect()
-            
-            return CogPath(output_path)
+            video_tensor = self.generator.inference(
+                input_prompt=prompt,
+                img_path=str(reference_image) if reference_image else None,
+                audio_path=str(audio) if audio else None,
+                size=(width, height),
+                frame_num=num_frames,
+                sampling_steps=num_inference_steps,
+                shift=5.0,
+                sample_solver='unipc',  # UniPC scheduler for stable generation
+                n_prompt=negative_prompt,
+                seed=seed,
+                offload_model=False,  # Keep models on GPU for speed
+                mode_override=generator_mode,
+                scale_t_override=float(guidance_scale),
+                scale_a_override=float(audio_guidance_scale),
+            )
+            print("🎥 Generation complete!")
             
         except Exception as e:
-            print(f"[ERROR] Video generation failed: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            torch.cuda.empty_cache()
-            gc.collect()
-            raise
+            # Provide actionable error messages for common failures
+            if "CUDA out of memory" in str(e):
+                raise RuntimeError("GPU memory insufficient. Try smaller resolution or fewer frames.")
+            raise RuntimeError(f"Generation failed: {str(e)}")
+        
+        # Create simple output path
+        output_path = "/tmp/video.mp4"
+        video_np = video_tensor.cpu().numpy()
+        
+        if video_np.ndim != 4:
+            raise ValueError(f"Invalid video tensor shape: {video_np.shape}")
+
+        # Apply proper normalization like the original research code
+        # Original: sample.clip(-1, 1).mul_(0.5).add_(0.5).mul_(255).to("cpu", torch.uint8)
+        video_tensor_normalized = video_tensor.clip(-1, 1).mul_(0.5).add_(0.5).mul_(255).to("cpu", torch.uint8)
+        video_np = video_tensor_normalized.numpy()
+        
+        # Fix tensor layout: model outputs [C, F, H, W] but imageio expects [F, H, W, C]
+        video_np = np.transpose(video_np, (1, 2, 3, 0))
+        
+        if audio:
+            from humo.models.utils.utils import tensor_to_video
+            # Convert back to float for tensor_to_video (it expects [0, 1] range)
+            video_np_float = video_np.astype(np.float32) / 255.0
+            tensor_to_video(video_np_float, output_path, str(audio), fps=25)
+            print("🎵 Saved with audio sync")
+        else:
+            import imageio
+            with imageio.get_writer(output_path, fps=25, codec='libx264', quality=8) as writer:
+                for frame in video_np:
+                    # Frame is already properly normalized uint8
+                    writer.append_data(frame)
+            print("🎬 Saved video")
+        
+        print(f"✅ Success: {duration:.1f}s video at {width}x{height}")
+        
+        # Return the tempfile path directly
+        return CPath(output_path)

@@ -1,8 +1,13 @@
-# Git
+# =============================================================================
+# HuMo Docker Build Exclusions
+# =============================================================================
+
+# Version Control
 .git/
 .gitignore
+.gitattributes
 
-# Python
+# Python Build Artifacts
 __pycache__/
 *.py[cod]
 *$py.class
@@ -27,30 +32,52 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-# Virtual environments
+# Development Environment
 venv/
 env/
 ENV/
+.env
+.venv
+conda-meta/
+.conda/
 
-# IDE
+# IDE and Editor Files
 .vscode/
 .idea/
 *.swp
 *.swo
+*.sublime-*
+.spyderproject
+.spyproject
 
-# OS
+# Operating System
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
 
-# Logs
+# Logs and Debugging
 *.log
+logs/
+.pytest_cache/
+.coverage
+htmlcov/
 
-# Temporary files
+# Temporary Files
 tmp/
 temp/
 *.tmp
+*.temp
+.cache/
 
-# Model weights and cache directories (downloaded during build or runtime)
+# =============================================================================
+# Model Weights and Data (Downloaded at Runtime)
+# =============================================================================
+
+# Model weights are downloaded during container startup, not build
 /weights/
 /weights/*
 /weights_backup/
@@ -60,23 +87,50 @@ temp/
 checkpoints/
 models/
 
-# Test outputs
+# =============================================================================
+# Generated Content and Test Outputs
+# =============================================================================
+
+# Output directories
 outputs/
 results/
 /output/
+generated/
 
-# Media files that might be generated during testing
+# Generated media files (exclude from build, created at runtime)
 *.png
 *.jpg
 *.jpeg
 *.gif
 *.webp
+*.bmp
+*.tiff
 *.mp4
 *.mov
 *.avi
 *.mkv
 *.flv
 *.webm
+*.m4v
 *.wav
 *.mp3
 *.flac
+*.aac
+*.ogg
+*.m4a
+
+# =============================================================================
+# Documentation and Examples (Keep lightweight examples only)
+# =============================================================================
+
+# Large documentation assets
+docs/
+documentation/
+*.pdf
+*.pptx
+*.docx
+
+# Keep small example files but exclude large demo content
+# examples/ - Keep this for essential examples
+demo_videos/
+sample_outputs/

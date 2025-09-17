@@ -9,17 +9,20 @@ from omegaconf import OmegaConf
 import imageio
 import torch
 import torchvision
-# Defer heavyweight import of moviepy until needed
+# MoviePy API compatibility: support both 1.x and 2.x versions
 try:
-    from moviepy.editor import AudioFileClip, VideoClip  # type: ignore
-except Exception:
-    AudioFileClip = None  # type: ignore
-    VideoClip = None  # type: ignore
+    # MoviePy 2.x (newer versions) - direct imports
+    from moviepy import AudioFileClip, VideoClip
+    MOVIEPY_NEW_API = True
+except ImportError:
+    # MoviePy 1.x (older versions) - editor module
+    from moviepy.editor import AudioFileClip, VideoClip
+    MOVIEPY_NEW_API = False
 
 __all__ = ['tensor_to_video', 'prepare_json_dataset']
     
 
-def tensor_to_video(tensor, output_video_path, input_audio_path=None, fps=25):
+def tensor_to_video(tensor, output_video_path, input_audio_path, fps=25):
     """
     Converts a Tensor with shape [c, f, h, w] into a video and adds an audio track from the specified audio file.
 
@@ -34,21 +37,21 @@ def tensor_to_video(tensor, output_video_path, input_audio_path=None, fps=25):
         return tensor[frame_index]
 
     video_duration = tensor.shape[0] / fps
-    if input_audio_path:
-        if AudioFileClip is None or VideoClip is None:
-            raise ImportError("moviepy is required for audio muxing but is not installed. Install moviepy or run without audio.")
-        audio_clip = AudioFileClip(input_audio_path)
-        audio_duration = audio_clip.duration
-        final_duration = min(video_duration, audio_duration)
+    audio_clip = AudioFileClip(input_audio_path)
+    audio_duration = audio_clip.duration
+    final_duration = min(video_duration, audio_duration)
+    # Apply version-specific API calls
+    if MOVIEPY_NEW_API:
+        # MoviePy 2.x: subclipped() and with_audio()
+        audio_clip = audio_clip.subclipped(0, final_duration)
+        new_video_clip = VideoClip(make_frame, duration=final_duration)
+        new_video_clip = new_video_clip.with_audio(audio_clip)
+    else:
+        # MoviePy 1.x: subclip() and set_audio()
         audio_clip = audio_clip.subclip(0, final_duration)
         new_video_clip = VideoClip(make_frame, duration=final_duration)
         new_video_clip = new_video_clip.set_audio(audio_clip)
-        new_video_clip.write_videofile(output_video_path, fps=fps, audio_codec="aac")
-    else:
-        # Write silent video using imageio when no audio provided
-        import numpy as _np
-        arr = _np.asarray(tensor)
-        imageio.mimwrite(output_video_path, arr, fps=fps, macro_block_size=None)
+    new_video_clip.write_videofile(output_video_path, fps=fps, audio_codec="aac")
 
 
 def prepare_json_dataset(json_path):

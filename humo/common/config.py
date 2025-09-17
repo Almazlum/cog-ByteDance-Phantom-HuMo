@@ -20,9 +20,7 @@ import importlib
 from typing import Any, Callable, List, Union
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
-from omegaconf import OmegaConf as _OC
-if not _OC.has_resolver("eval"):
-    _OC.register_new_resolver("eval", eval)
+OmegaConf.register_new_resolver("eval", eval)
 
 
 def load_config(path: str, argv: List[str] = None) -> Union[DictConfig, ListConfig]:

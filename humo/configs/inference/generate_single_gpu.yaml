@@ -1,79 +1,85 @@
 __object__:
-  path: humo.generate
   name: Generator
-
-dit:
-  model:
-    __inherit__: humo/configs/models/Wan_14B_I2V.yaml
-    __object__:
-      path: humo.models.wan_modules.model_humo
-      name: WanModel
-      args: as_params
-      model_type: t2v
-    insert_audio: True
-  zero_vae_path: ./weights/HuMo/zero_vae_129frame.pt
-  zero_vae_720p_path: ./weights/HuMo/zero_vae_720p_161frame.pt
-  checkpoint_dir: ./weights/HuMo/HuMo-17B
-  compile: False
-  init_with_meta_device: True
-  gradient_checkpoint: True
-  fsdp:
-    sharding_strategy: _HYBRID_SHARD_ZERO2
-  sp_size: 1
-
-vae:
-  checkpoint: ./weights/Wan2.1-T2V-1.3B/Wan2.1_VAE.pth
-  vae_stride: [ 4, 8, 8 ]
-  scaling_factor: 0.9152
-  compile: False
-  grouping: True
-  use_sample: False
-  dtype: bfloat16
-
-text:
-  t5_checkpoint: ./weights/Wan2.1-T2V-1.3B/models_t5_umt5-xxl-enc-bf16.pth
-  t5_tokenizer: ./weights/Wan2.1-T2V-1.3B/google/umt5-xxl
-  dropout: 0.1
-  dtype: bfloat16
-  fsdp:
-    enabled: True
-    sharding_strategy: HYBRID_SHARD
-
-diffusion:
-  schedule:
-    type: lerp
-    T: 1000.0
-  sampler:
-    type: euler
-    prediction_type: v_lerp
-  timesteps:
-    training:
-      type: logitnormal
-      loc: 0.0
-      scale: 1.0
-    sampling:
-      type: uniform_trailing
-      steps: 50
-      shift: 5.0
-
+  path: humo.generate
 audio:
   vocal_separator: ./weights/audio_separator/Kim_Vocal_2.onnx
   wav2vec_model: ./weights/whisper-large-v3
-
+diffusion:
+  sampler:
+    prediction_type: v_lerp
+    type: euler
+  schedule:
+    T: 1000.0
+    type: lerp
+  timesteps:
+    sampling:
+      shift: 5.0
+      steps: 20
+      type: uniform_trailing
+    training:
+      loc: 0.0
+      scale: 1.0
+      type: logitnormal
+dit:
+  checkpoint_dir: ./weights/HuMo/HuMo-17B
+  compile: false
+  fsdp:
+    enabled: false
+    sharding_strategy: _HYBRID_SHARD_ZERO2
+  gradient_checkpoint: true
+  init_with_meta_device: true
+  model:
+    __inherit__: humo/configs/models/Wan_14B_I2V.yaml
+    __object__:
+      name: WanModel
+      path: humo.models.wan_modules.model_humo
+    insert_audio: true
+  sp_size: 1
+  zero_vae_720p_path: ./weights/HuMo/zero_vae_720p_161frame.pt
+  zero_vae_path: ./weights/HuMo/zero_vae_129frame.pt
 generation:
-  mode: "T"  # TA, TIA
-  extract_audio_feat: False
-  seed: 666666
-  frames: 97
-  fps: 25
-  height: 720 # 480
-  width: 1280 # 832
   batch_size: 1
-  sequence_parallel: 1
+  extract_audio_feat: true
+  fps: 25
+  frames: 49
+  height: 720
+  mode: TIA
   output:
     dir: ./output
   positive_prompt: ./examples/test_case.json
-  sample_neg_prompt: '色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走'
+  sample_neg_prompt: "\u8272\u8C03\u8273\u4E3D\uFF0C\u8FC7\u66DD\uFF0C\u9759\u6001\
+    \uFF0C\u7EC6\u8282\u6A21\u7CCA\u4E0D\u6E05\uFF0C\u5B57\u5E55\uFF0C\u98CE\u683C\
+    \uFF0C\u4F5C\u54C1\uFF0C\u753B\u4F5C\uFF0C\u753B\u9762\uFF0C\u9759\u6B62\uFF0C\
+    \u6574\u4F53\u53D1\u7070\uFF0C\u6700\u5DEE\u8D28\u91CF\uFF0C\u4F4E\u8D28\u91CF\
+    \uFF0CJPEG\u538B\u7F29\u6B8B\u7559\uFF0C\u4E11\u964B\u7684\uFF0C\u6B8B\u7F3A\u7684\
+    \uFF0C\u591A\u4F59\u7684\u624B\u6307\uFF0C\u753B\u5F97\u4E0D\u597D\u7684\u624B\
+    \u90E8\uFF0C\u753B\u5F97\u4E0D\u597D\u7684\u8138\u90E8\uFF0C\u7578\u5F62\u7684\
+    \uFF0C\u6BC1\u5BB9\u7684\uFF0C\u5F62\u6001\u7578\u5F62\u7684\u80A2\u4F53\uFF0C\
+    \u624B\u6307\u878D\u5408\uFF0C\u9759\u6B62\u4E0D\u52A8\u7684\u753B\u9762\uFF0C\
+    \u6742\u4E71\u7684\u80CC\u666F\uFF0C\u4E09\u6761\u817F\uFF0C\u80CC\u666F\u4EBA\
+    \u5F88\u591A\uFF0C\u5012\u7740\u8D70"
   scale_a: 5.5
   scale_t: 5.0
+  seed: 666666
+  sequence_parallel: 1
   step_change: 980
+  width: 1280
+text:
+  dropout: 0.1
+  dtype: bfloat16
+  fsdp:
+    enabled: false
+    sharding_strategy: HYBRID_SHARD
+  t5_checkpoint: ./weights/Wan2.1-T2V-1.3B/models_t5_umt5-xxl-enc-bf16.pth
+  t5_tokenizer: ./weights/Wan2.1-T2V-1.3B/google/umt5-xxl
+vae:
+  checkpoint: ./weights/Wan2.1-T2V-1.3B/Wan2.1_VAE.pth
+  compile: false
+  dtype: bfloat16
+  grouping: true
+  scaling_factor: 0.9152
+  use_sample: false
+  vae_stride:
+  - 4
+  - 8
+  - 8
